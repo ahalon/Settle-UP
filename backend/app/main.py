@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.database import engine
 from app.models.base import Base
-from app.api.endpoints import router as api_router
+from app.api.router import router as api_router
 
 # Automatyczne utworzenie wszystkich tabel zdefiniowanych w Base (users, groups, group_members, expenses)
 Base.metadata.create_all(bind=engine)

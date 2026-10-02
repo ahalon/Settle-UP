@@ -1,0 +1,69 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.api.auth import get_current_user
+from app.core.database import get_db
+from app.models.base import Expense, Group, Transfer, User
+from app.schemas import BalanceOut
+
+router = APIRouter()
+
+
+def calculate_group_balances(group: Group, db: Session) -> dict[int, int]:
+    members = group.members
+    num_members = len(members)
+    net_balances = {member.id: 0 for member in members}
+
+    if num_members == 0:
+        return net_balances
+
+    expenses = db.query(Expense).filter(Expense.group_id == group.id).all()
+    for expense in expenses:
+        share = expense.amount // num_members
+        for member in members:
+            net_balances[member.id] -= share
+        net_balances[expense.payer_id] += expense.amount
+
+    active_transfers = (
+        db.query(Transfer)
+        .filter(Transfer.group_id == group.id, Transfer.status != "rejected")
+        .all()
+    )
+    for transfer in active_transfers:
+        net_balances[transfer.sender_id] += transfer.amount
+        net_balances[transfer.receiver_id] -= transfer.amount
+
+    return net_balances
+
+
+@router.get("/groups/{group_id}/balance", response_model=BalanceOut)
+def get_group_balance(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group or current_user not in group.members:
+        raise HTTPException(status_code=403, detail="Brak dostępu do tej grupy.")
+
+    members = group.members
+    if len(members) < 2:
+        return {"summary": "Zaproś drugą osobę do lobby, aby widzieć rozliczenia.", "balances": {}}
+
+    net_balances = calculate_group_balances(group, db)
+
+    my_balance_cents = net_balances.get(current_user.id, 0)
+    my_balance_pln = my_balance_cents / 100
+
+    if my_balance_pln > 0:
+        summary = f"Grupa jest Ci winna: {my_balance_pln:.2f} PLN"
+    elif my_balance_pln < 0:
+        summary = f"Jesteś winny grupie: {abs(my_balance_pln):.2f} PLN"
+    else:
+        summary = "Wszystko rozliczone na czysto (0.00 PLN)"
+
+    return {
+        "summary": summary,
+        "my_net_balance": my_balance_cents,
+        "all_balances": net_balances,
+    }

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
@@ -21,6 +21,24 @@ class UserLogin(BaseModel):
     """Schemat logowania JSON."""
     email: EmailStr
     password: str = Field(..., min_length=1)
+
+
+class RegisterPayload(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+
+
+class LoginPayload(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user_id: int
+    name: str
 
 
 class UserOut(UserBase):
@@ -88,7 +106,17 @@ class TransferOut(BaseModel):
     sender_id: int
     receiver_id: int
     amount: int
-    status: str
+    status: Literal["pending", "confirmed", "rejected"]
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ==========================================
+# --- BALANCE SCHEMAS ---
+# ==========================================
+
+class BalanceOut(BaseModel):
+    summary: str
+    my_net_balance: Optional[int] = None
+    all_balances: dict[str, int] = {}
