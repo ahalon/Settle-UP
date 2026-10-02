@@ -63,3 +63,15 @@ class Expense(Base):
     # Relacje
     payer = relationship("User", back_populates="expenses_paid")
     group = relationship("Group", back_populates="expenses")
+
+
+class Transfer(Base):
+    __tablename__ = "transfers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
+    sender_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    receiver_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    amount = Column(Integer, nullable=False)
+    status = Column(String(20), nullable=False, default="pending")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

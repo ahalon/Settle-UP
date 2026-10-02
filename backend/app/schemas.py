@@ -71,3 +71,24 @@ class ExpenseOut(ExpenseCreate):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ==========================================
+# --- TRANSFER SCHEMAS ---
+# ==========================================
+
+class TransferCreate(BaseModel):
+    receiver_id: int = Field(..., gt=0)
+    amount: int = Field(..., gt=0, description="Kwota przelewu w groszach/centach")
+
+
+class TransferOut(BaseModel):
+    id: int
+    group_id: int
+    sender_id: int
+    receiver_id: int
+    amount: int
+    status: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

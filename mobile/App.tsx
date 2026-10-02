@@ -7,7 +7,7 @@ import {
   TouchableOpacity,
   Alert,
   ActivityIndicator,
-  FlatList,
+  Modal,
   StatusBar,
   ScrollView,
   Image,
@@ -20,6 +20,18 @@ import { getToken, removeToken, getUserData } from './authStorage';
 
 const API_URL = 'http://192.168.1.69:8000';
 
+function ElasticScrollView(props: React.ComponentProps<typeof ScrollView>) {
+  return (
+    <ScrollView
+      {...props}
+      alwaysBounceVertical
+      bounces
+      overScrollMode="always"
+      scrollEventThrottle={16}
+    />
+  );
+}
+
 interface User {
   id: number;
   name: string;
@@ -31,6 +43,8 @@ interface Group {
   name: string;
   join_code: string;
   members: User[];
+  balanceSummary?: string;
+  balanceCents?: number;
 }
 
 interface Expense {
@@ -41,12 +55,23 @@ interface Expense {
   group_id: number;
   created_at: string;
   description?: string | null;
+  receipt_image?: string | null;
 }
 
 interface BalanceResponse {
   summary: string;
   my_net_balance?: number;
   all_balances?: Record<string, number>;
+}
+
+interface Transfer {
+  id: number;
+  group_id: number;
+  sender_id: number;
+  receiver_id: number;
+  amount: number;
+  status: 'pending' | 'confirmed' | 'rejected';
+  created_at: string;
 }
 
 // Zabezpieczenie przed błędem "ReadableNativeArray to String"
@@ -69,18 +94,23 @@ export default function App() {
   const [activeGroup, setActiveGroup] = useState<Group | null>(null);
   const [newGroupName, setNewGroupName] = useState('');
   const [joinCodeInput, setJoinCodeInput] = useState('');
+  const [dashboardAction, setDashboardAction] = useState<'create' | 'join' | null>(null);
 
   // Stan wydatków wewnątrz lobby
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [balance, setBalance] = useState<BalanceResponse | null>(null);
+  const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [selectedPayerId, setSelectedPayerId] = useState<number | null>(null);
+  const [transferRecipientId, setTransferRecipientId] = useState<number | null>(null);
+  const [transferAmount, setTransferAmount] = useState('');
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [receiptImage, setReceiptImage] = useState<string | null>(null);
   const [isExpenseFormOpen, setIsExpenseFormOpen] = useState(false);
+  const [activeLobbyTab, setActiveLobbyTab] = useState<'expenses' | 'transfers'>('expenses');
+  const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null);
   const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -106,7 +136,25 @@ export default function App() {
       const res = await axios.get<Group[]>(`${API_URL}/api/groups/my`, {
         headers: { Authorization: `Bearer ${authToken}` },
       });
-      setMyGroups(res.data);
+      const headers = { Authorization: `Bearer ${authToken}` };
+      const groupsWithBalances = await Promise.all(
+        res.data.map(async (group) => {
+          try {
+            const balanceRes = await axios.get<BalanceResponse>(
+              `${API_URL}/api/groups/${group.id}/balance`,
+              { headers }
+            );
+            return {
+              ...group,
+              balanceSummary: balanceRes.data.summary,
+              balanceCents: balanceRes.data.my_net_balance,
+            };
+          } catch {
+            return group;
+          }
+        })
+      );
+      setMyGroups(groupsWithBalances);
     } catch (err) {
       console.log('Błąd pobierania grup:', err);
     }
@@ -122,13 +170,19 @@ export default function App() {
     try {
       const headers = { Authorization: `Bearer ${authToken}` };
 
-      const [expRes, balRes] = await Promise.all([
+      const [expRes, balRes, transferRes] = await Promise.all([
         axios.get<Expense[]>(`${API_URL}/api/groups/${groupId}/expenses`, { headers }),
         axios.get<BalanceResponse>(`${API_URL}/api/groups/${groupId}/balance`, { headers }),
+        axios.get<Transfer[]>(`${API_URL}/api/groups/${groupId}/transfers`, { headers }),
       ]);
 
       setExpenses(expRes.data);
       setBalance(balRes.data);
+      setTransfers(transferRes.data);
+      const firstCreditor = activeGroup?.members.find(
+        (member) => (balRes.data.all_balances?.[String(member.id)] || 0) > 0
+      );
+      setTransferRecipientId((current) => current || firstCreditor?.id || null);
     } catch (err) {
       console.log('Błąd pobierania szczegółów grupy:', err);
     }
@@ -146,6 +200,13 @@ export default function App() {
     setToken(null);
     setCurrentUser(null);
     setActiveGroup(null);
+  };
+
+  const getGroupBalanceStyle = (balanceCents?: number) => {
+    if (balanceCents === undefined || balanceCents === 0) {
+      return styles.groupCardNeutral;
+    }
+    return balanceCents < 0 ? styles.groupCardOwed : styles.groupCardDue;
   };
 
   const handleCreateGroup = async () => {
@@ -222,6 +283,7 @@ export default function App() {
           payer_id: selectedPayerId,
           group_id: activeGroup.id,
           description: description.trim() || null,
+          receipt_image: receiptImage,
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
@@ -237,6 +299,81 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleDeclareTransfer = async () => {
+    if (!activeGroup || !token || !transferRecipientId || !transferAmount) {
+      Alert.alert('Błąd', 'Wybierz odbiorcę i wpisz kwotę przelewu');
+      return;
+    }
+
+    const amountInCents = Math.round(parseFloat(transferAmount.replace(',', '.')) * 100);
+    if (!Number.isFinite(amountInCents) || amountInCents <= 0) {
+      Alert.alert('Błąd', 'Wpisz poprawną kwotę przelewu');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await axios.post(
+        `${API_URL}/api/groups/${activeGroup.id}/transfers`,
+        { receiver_id: transferRecipientId, amount: amountInCents },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setTransferAmount('');
+      await loadGroupDetails(activeGroup.id, token);
+      Alert.alert('Wysłano', 'Deklaracja przelewu czeka na potwierdzenie odbiorcy.');
+    } catch (err: any) {
+      Alert.alert('Błąd', getErrorMessage(err, 'Nie udało się zadeklarować przelewu'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleTransferDecision = async (transferId: number, decision: 'confirm' | 'reject') => {
+    if (!activeGroup || !token) return;
+
+    setLoading(true);
+    try {
+      await axios.post(
+        `${API_URL}/api/transfers/${transferId}/${decision}`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      await loadGroupDetails(activeGroup.id, token);
+    } catch (err: any) {
+      Alert.alert('Błąd', getErrorMessage(err, 'Nie udało się zmienić statusu przelewu'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteTransfer = (transferId: number) => {
+    Alert.alert(
+      'Usuń deklarację',
+      'Czy na pewno chcesz usunąć tę deklarację przelewu?',
+      [
+        { text: 'Anuluj', style: 'cancel' },
+        {
+          text: 'Usuń',
+          style: 'destructive',
+          onPress: async () => {
+            if (!activeGroup || !token) return;
+            setLoading(true);
+            try {
+              await axios.delete(`${API_URL}/api/transfers/${transferId}`, {
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              await loadGroupDetails(activeGroup.id, token);
+            } catch (err: any) {
+              Alert.alert('Błąd', getErrorMessage(err, 'Nie udało się usunąć deklaracji'));
+            } finally {
+              setLoading(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleDeleteExpense = (expenseId: number) => {
@@ -296,27 +433,171 @@ export default function App() {
   if (activeGroup) {
     return (
       <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="light-content" />
+          <StatusBar barStyle="light-content" />
 
-        <View style={styles.navBar}>
-          <TouchableOpacity onPress={() => setActiveGroup(null)} style={styles.backBtn}>
-            <Text style={styles.backBtnText}>← Wróć</Text>
-          </TouchableOpacity>
-          <Text style={styles.groupHeaderName}>{activeGroup.name}</Text>
-        </View>
+          <ElasticScrollView
+            style={styles.lobbyContentScroll}
+            contentContainerStyle={styles.lobbyContent}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            alwaysBounceVertical
+            bounces
+            overScrollMode="always"
+            scrollEnabled
+            showsVerticalScrollIndicator
+          >
 
-        <View style={styles.codeCard}>
-          <Text style={styles.codeLabel}>KOD DOŁĄCZENIA DO TEGO LOBBY:</Text>
-          <Text style={styles.codeValue}>{activeGroup.join_code}</Text>
-        </View>
+          <View style={styles.navBar}>
+            <TouchableOpacity onPress={() => setActiveGroup(null)} style={styles.backBtn}>
+              <Text style={styles.backBtnText}>← Wróć</Text>
+            </TouchableOpacity>
+            <Text style={styles.groupHeaderName}>{activeGroup.name}</Text>
+          </View>
 
-        <View style={styles.balanceCard}>
-          <Text style={styles.balanceLabel}>Twój bilans w tej grupie:</Text>
-          <Text style={styles.balanceValue}>{balance?.summary || 'Ładowanie...'}</Text>
-        </View>
+          <View style={styles.codeCard}>
+            <Text style={styles.codeLabel}>KOD DOŁĄCZENIA DO TEGO LOBBY:</Text>
+            <Text style={styles.codeValue}>{activeGroup.join_code}</Text>
+          </View>
 
-        {/* Formularz wydatku */}
-        <View style={styles.formCard}>
+          <View style={styles.balanceCard}>
+            <Text style={styles.balanceLabel}>Twój bilans w tej grupie:</Text>
+            <Text style={styles.balanceValue}>{balance?.summary || 'Ładowanie...'}</Text>
+          </View>
+
+          <View style={styles.lobbyTabs}>
+            <TouchableOpacity
+              style={[styles.lobbyTab, activeLobbyTab === 'expenses' && styles.lobbyTabActive]}
+              onPress={() => setActiveLobbyTab('expenses')}
+            >
+              <Text style={styles.lobbyTabText}>Wydatki</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.lobbyTab, activeLobbyTab === 'transfers' && styles.lobbyTabActive]}
+              onPress={() => setActiveLobbyTab('transfers')}
+            >
+              <Text style={styles.lobbyTabText}>Przelewy</Text>
+            </TouchableOpacity>
+          </View>
+
+          {activeLobbyTab === 'transfers' && (
+            <View style={styles.transferTabContent}>
+              {balance?.my_net_balance !== undefined && balance.my_net_balance < 0 && (
+                <View style={styles.transferCard}>
+                  <Text style={styles.transferTitle}>Oddaj pieniądze</Text>
+                  <Text style={styles.transferHint}>
+                    Do spłaty: {(Math.abs(balance.my_net_balance) / 100).toFixed(2)} PLN
+                  </Text>
+                  <Text style={styles.subLabel}>Odbiorca przelewu</Text>
+                  <View style={styles.transferRecipients}>
+                    {activeGroup.members
+                      .filter(
+                        (member) =>
+                          member.id !== currentUser?.id &&
+                          (balance.all_balances?.[String(member.id)] || 0) > 0
+                      )
+                      .map((member) => (
+                        <TouchableOpacity
+                          key={member.id}
+                          style={[
+                            styles.transferRecipient,
+                            transferRecipientId === member.id && styles.transferRecipientActive,
+                          ]}
+                          onPress={() => setTransferRecipientId(member.id)}
+                        >
+                          <Text style={styles.transferRecipientText}>{member.name}</Text>
+                        </TouchableOpacity>
+                      ))}
+                  </View>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Kwota przelewu (PLN)"
+                    placeholderTextColor="#64748b"
+                    keyboardType="numeric"
+                    value={transferAmount}
+                    onChangeText={setTransferAmount}
+                  />
+                  <TouchableOpacity
+                    style={styles.transferButton}
+                    onPress={handleDeclareTransfer}
+                    disabled={loading}
+                  >
+                    <Text style={styles.actionBtnText}>Zadeklaruj przelew</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              <Text style={styles.transferSectionTitle}>Oczekujące</Text>
+              {transfers.filter((transfer) => transfer.status === 'pending').map((transfer) => {
+                const isSender = transfer.sender_id === currentUser?.id;
+                const isReceiver = transfer.receiver_id === currentUser?.id;
+                return (
+                  <View key={transfer.id} style={styles.transferTile}>
+                    <View style={styles.transferTileHeader}>
+                      <Text style={styles.transferTileStatus}>OCZEKUJĄCY</Text>
+                      {isSender && (
+                        <TouchableOpacity
+                          style={styles.deleteTransferBtn}
+                          onPress={() => handleDeleteTransfer(transfer.id)}
+                        >
+                          <Text style={styles.deleteTransferText}>✕</Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                    <Text style={styles.transferTilePeople}>
+                      {getPayerName(transfer.sender_id)} → {getPayerName(transfer.receiver_id)}
+                    </Text>
+                    <Text style={styles.transferTileAmount}>
+                      {(transfer.amount / 100).toFixed(2)} PLN
+                    </Text>
+                    <Text style={styles.transferTileDate}>
+                      {new Date(transfer.created_at).toLocaleString('pl-PL')}
+                    </Text>
+                    {isReceiver && (
+                      <View style={styles.transferDecisionRow}>
+                        <TouchableOpacity
+                          style={styles.confirmTransferButton}
+                          onPress={() => handleTransferDecision(transfer.id, 'confirm')}
+                          disabled={loading}
+                        >
+                          <Text style={styles.transferDecisionText}>Potwierdź</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.rejectTransferButton}
+                          onPress={() => handleTransferDecision(transfer.id, 'reject')}
+                          disabled={loading}
+                        >
+                          <Text style={styles.transferDecisionText}>Odrzuć</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+
+              <Text style={styles.transferSectionTitle}>Potwierdzone</Text>
+              {transfers.filter((transfer) => transfer.status === 'confirmed').map((transfer) => (
+                <View key={transfer.id} style={styles.transferTileConfirmed}>
+                  <Text style={styles.transferTileStatusConfirmed}>POTWIERDZONY</Text>
+                  <Text style={styles.transferTilePeople}>
+                    {getPayerName(transfer.sender_id)} → {getPayerName(transfer.receiver_id)}
+                  </Text>
+                  <Text style={styles.transferTileAmount}>
+                    {(transfer.amount / 100).toFixed(2)} PLN
+                  </Text>
+                  <Text style={styles.transferTileDate}>
+                    {new Date(transfer.created_at).toLocaleString('pl-PL')}
+                  </Text>
+                </View>
+              ))}
+              {transfers.filter((transfer) => transfer.status === 'pending').length === 0 &&
+                transfers.filter((transfer) => transfer.status === 'confirmed').length === 0 && (
+                  <Text style={styles.emptyText}>Brak przelewów</Text>
+                )}
+            </View>
+          )}
+
+          {/* Formularz wydatku */}
+          {activeLobbyTab === 'expenses' && <View style={styles.formCard}>
           <TouchableOpacity
             style={[styles.formHeader, isExpenseFormOpen && styles.formHeaderOpen]}
             onPress={() => setIsExpenseFormOpen(!isExpenseFormOpen)}
@@ -327,7 +608,7 @@ export default function App() {
           </TouchableOpacity>
 
           {isExpenseFormOpen && (
-            <>
+            <View>
               <Text style={styles.subLabel}>Kto zapłacił?</Text>
               <View style={styles.payerSelector}>
                 {activeGroup.members.map((m) => (
@@ -410,30 +691,26 @@ export default function App() {
                   <Text style={styles.actionBtnText}>Zapisz wydatek</Text>
                 )}
               </TouchableOpacity>
-            </>
+            </View>
           )}
-        </View>
+          </View>}
 
-        {/* Lista wydatków */}
-        <View style={styles.listContainer}>
-          <Text style={styles.sectionTitle}>Wydatki grupy</Text>
-          <FlatList
-            data={expenses}
-            keyExtractor={(item) => item.id.toString()}
-            onRefresh={async () => {
-              setRefreshing(true);
-              await loadGroupDetails(activeGroup.id, token);
-              setRefreshing(false);
-            }}
-            refreshing={refreshing}
-            renderItem={({ item }) => (
-              <View style={styles.expenseItem}>
+          {/* Lista wydatków */}
+          {activeLobbyTab === 'expenses' && <View style={styles.listContainer}>
+            <Text style={styles.sectionTitle}>Wydatki grupy</Text>
+            {expenses.map((item) => (
+              <TouchableOpacity
+                key={item.id}
+                style={styles.expenseItem}
+                onPress={() => setSelectedExpense(item)}
+                activeOpacity={0.8}
+              >
                 <View style={{ flex: 1 }}>
                   <Text style={styles.expenseTitle}>{item.title}</Text>
                   {item.description && (
                     <Text style={styles.expenseDescription}>{item.description}</Text>
                   )}
-                  <Text style={styles.expenseSub}>Płatnik: {getPayerName(item.payer_id)}</Text>
+                  <Text style={styles.expenseSub}>{getPayerName(item.payer_id)}</Text>
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                   <Text style={styles.expenseAmount}>
@@ -448,13 +725,66 @@ export default function App() {
                     </TouchableOpacity>
                   )}
                 </View>
-              </View>
-            )}
-            ListEmptyComponent={
+              </TouchableOpacity>
+            ))}
+            {expenses.length === 0 && (
               <Text style={styles.emptyText}>Brak wydatków w tym lobby</Text>
-            }
-          />
-        </View>
+            )}
+          </View>}
+
+          </ElasticScrollView>
+
+          <Modal
+            visible={selectedExpense !== null}
+            transparent
+            animationType="fade"
+            onRequestClose={() => setSelectedExpense(null)}
+          >
+            <View style={styles.modalOverlay}>
+              {selectedExpense && (
+                <View style={styles.expenseDetailsCard}>
+                  <View style={styles.detailsHeader}>
+                    <Text style={styles.detailsTitle}>Szczegóły wydatku</Text>
+                    <TouchableOpacity
+                      onPress={() => setSelectedExpense(null)}
+                      style={styles.closeDetailsBtn}
+                      accessibilityLabel="Zamknij szczegóły wydatku"
+                    >
+                      <Text style={styles.closeDetailsText}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <ScrollView showsVerticalScrollIndicator={false}>
+                    <Text style={styles.detailsExpenseTitle}>{selectedExpense.title}</Text>
+                    <Text style={styles.detailsAmount}>
+                      {(selectedExpense.amount / 100).toFixed(2)} PLN
+                    </Text>
+                    <Text style={styles.detailsLabel}>Płatnik</Text>
+                    <Text style={styles.detailsValue}>
+                      {getPayerName(selectedExpense.payer_id)}
+                    </Text>
+                    <Text style={styles.detailsLabel}>Data</Text>
+                    <Text style={styles.detailsValue}>
+                      {new Date(selectedExpense.created_at).toLocaleString('pl-PL')}
+                    </Text>
+                    <Text style={styles.detailsLabel}>Opis</Text>
+                    <Text style={styles.detailsValue}>
+                      {selectedExpense.description || 'Brak opisu'}
+                    </Text>
+                    {selectedExpense.receipt_image && (
+                      <>
+                        <Text style={styles.detailsLabel}>Paragon</Text>
+                        <Image
+                          source={{ uri: selectedExpense.receipt_image }}
+                          style={styles.detailsReceiptImage}
+                        />
+                      </>
+                    )}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
+          </Modal>
       </SafeAreaView>
     );
   }
@@ -471,55 +801,92 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Utwórz nowe lobby</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Nazwa (np. Mieszkanie Kraków)"
-            placeholderTextColor="#64748b"
-            value={newGroupName}
-            onChangeText={setNewGroupName}
-          />
+      <ElasticScrollView
+        contentContainerStyle={styles.scrollContent}
+        alwaysBounceVertical
+        bounces
+        overScrollMode="always"
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator
+      >
+        <View style={styles.dashboardActions}>
           <TouchableOpacity
-            style={styles.actionBtn}
-            onPress={handleCreateGroup}
-            disabled={loading}
+            style={[styles.dashboardAction, styles.createAction]}
+            onPress={() => setDashboardAction(dashboardAction === 'create' ? null : 'create')}
+            activeOpacity={0.8}
           >
-            <Text style={styles.actionBtnText}>Stwórz lobby</Text>
+            <Text style={styles.dashboardActionIcon}>＋</Text>
+            <Text style={styles.dashboardActionTitle}>Utwórz lobby</Text>
+            <Text style={styles.dashboardActionHint}>Stwórz nowe miejsce dla grupy</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.dashboardAction, styles.joinAction]}
+            onPress={() => setDashboardAction(dashboardAction === 'join' ? null : 'join')}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.dashboardActionIcon}>⌁</Text>
+            <Text style={styles.dashboardActionTitle}>Dołącz po kodzie</Text>
+            <Text style={styles.dashboardActionHint}>Wpisz kod otrzymany od grupy</Text>
           </TouchableOpacity>
         </View>
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Dołącz po kodzie</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Wpisz 6-znakowy kod"
-            placeholderTextColor="#64748b"
-            autoCapitalize="characters"
-            value={joinCodeInput}
-            onChangeText={setJoinCodeInput}
-          />
-          <TouchableOpacity
-            style={[styles.actionBtn, styles.secondaryBtn]}
-            onPress={handleJoinGroup}
-            disabled={loading}
-          >
-            <Text style={styles.actionBtnText}>Dołącz do ekipy</Text>
-          </TouchableOpacity>
-        </View>
+        {dashboardAction === 'create' && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Utwórz nowe lobby</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Nazwa (np. Mieszkanie Kraków)"
+              placeholderTextColor="#64748b"
+              value={newGroupName}
+              onChangeText={setNewGroupName}
+            />
+            <TouchableOpacity
+              style={styles.actionBtn}
+              onPress={handleCreateGroup}
+              disabled={loading}
+            >
+              <Text style={styles.actionBtnText}>Stwórz lobby</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
-        <Text style={[styles.sectionTitle, { marginTop: 12 }]}>Twoje aktywne lobby</Text>
+        {dashboardAction === 'join' && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Dołącz po kodzie</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Wpisz 6-znakowy kod"
+              placeholderTextColor="#64748b"
+              autoCapitalize="characters"
+              value={joinCodeInput}
+              onChangeText={setJoinCodeInput}
+            />
+            <TouchableOpacity
+              style={[styles.actionBtn, styles.secondaryBtn]}
+              onPress={handleJoinGroup}
+              disabled={loading}
+            >
+              <Text style={styles.actionBtnText}>Dołącz do ekipy</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        <Text style={styles.activeGroupsTitle}>Twoje aktywne lobby</Text>
         {myGroups.map((g) => (
           <TouchableOpacity
             key={g.id}
-            style={styles.groupCard}
+            style={[styles.groupCard, getGroupBalanceStyle(g.balanceCents)]}
             onPress={() => setActiveGroup(g)}
           >
             <View>
               <Text style={styles.groupName}>{g.name}</Text>
               <Text style={styles.groupMembersCount}>
                 Członków: {g.members?.length || 1} • Kod: {g.join_code}
+              </Text>
+              <Text style={styles.groupBalance}>
+                Saldo: {g.balanceSummary || 'Brak danych'}
               </Text>
             </View>
             <Text style={styles.groupArrow}>→</Text>
@@ -529,7 +896,7 @@ export default function App() {
         {myGroups.length === 0 && (
           <Text style={styles.emptyText}>Nie należysz jeszcze do żadnego lobby.</Text>
         )}
-      </ScrollView>
+      </ElasticScrollView>
     </SafeAreaView>
   );
 }
@@ -548,6 +915,59 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 24,
+    flexGrow: 1,
+  },
+  lobbyContentScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  lobbyContent: {
+    paddingBottom: 28,
+    flexGrow: 1,
+  },
+  dashboardActions: {
+    gap: 10,
+    marginBottom: 20,
+  },
+  dashboardAction: {
+    minHeight: 78,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    justifyContent: 'center',
+  },
+  createAction: {
+    backgroundColor: '#f59e0b',
+    borderColor: '#fbbf24',
+  },
+  joinAction: {
+    backgroundColor: '#0284c7',
+    borderColor: '#38bdf8',
+  },
+  dashboardActionIcon: {
+    position: 'absolute',
+    right: 16,
+    top: 12,
+    color: '#f8fafc',
+    fontSize: 24,
+    fontWeight: '800',
+  },
+  dashboardActionTitle: {
+    color: '#f8fafc',
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  dashboardActionHint: {
+    color: '#e0f2fe',
+    fontSize: 12,
+    marginTop: 3,
+  },
+  activeGroupsTitle: {
+    color: '#f8fafc',
+    fontSize: 20,
+    fontWeight: '800',
+    marginBottom: 10,
   },
   userBar: {
     flexDirection: 'row',
@@ -641,6 +1061,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#334155',
   },
+  groupCardNeutral: {
+    backgroundColor: '#1e293b',
+    borderColor: '#334155',
+  },
+  groupCardOwed: {
+    backgroundColor: '#451a1a',
+    borderColor: '#ef4444',
+  },
+  groupCardDue: {
+    backgroundColor: '#14532d',
+    borderColor: '#22c55e',
+  },
   groupName: {
     color: '#f8fafc',
     fontSize: 16,
@@ -650,6 +1082,12 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     fontSize: 12,
     marginTop: 2,
+  },
+  groupBalance: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 4,
   },
   groupArrow: {
     color: '#38bdf8',
@@ -671,6 +1109,178 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
     marginTop: 2,
+  },
+  lobbyTabs: {
+    flexDirection: 'row',
+    backgroundColor: '#1e293b',
+    borderRadius: 8,
+    padding: 4,
+    marginBottom: 10,
+  },
+  lobbyTab: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 9,
+    borderRadius: 6,
+  },
+  lobbyTabActive: {
+    backgroundColor: '#2563eb',
+  },
+  lobbyTabText: {
+    color: '#f8fafc',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  transferTabContent: {
+    paddingBottom: 24,
+  },
+  transferSectionTitle: {
+    color: '#f8fafc',
+    fontSize: 16,
+    fontWeight: '800',
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  transferTile: {
+    backgroundColor: '#1e293b',
+    borderColor: '#f59e0b',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+  },
+  transferTileConfirmed: {
+    backgroundColor: '#14532d',
+    borderColor: '#22c55e',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+  },
+  transferTileHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  transferTileStatus: {
+    color: '#fbbf24',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  transferTileStatusConfirmed: {
+    color: '#86efac',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  transferTilePeople: {
+    color: '#f8fafc',
+    fontSize: 15,
+    fontWeight: '700',
+    marginTop: 6,
+  },
+  transferTileAmount: {
+    color: '#f8fafc',
+    fontSize: 17,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  transferTileDate: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 4,
+  },
+  deleteTransferBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#7f1d1d',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteTransferText: {
+    color: '#fecaca',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  transferCard: {
+    backgroundColor: '#1e293b',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#475569',
+  },
+  transferTitle: {
+    color: '#f8fafc',
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  transferHint: {
+    color: '#94a3b8',
+    fontSize: 12,
+    marginBottom: 8,
+  },
+  transferRecipients: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 8,
+  },
+  transferRecipient: {
+    backgroundColor: '#334155',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 6,
+  },
+  transferRecipientActive: {
+    backgroundColor: '#2563eb',
+  },
+  transferRecipientText: {
+    color: '#f8fafc',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  transferButton: {
+    backgroundColor: '#2563eb',
+    paddingVertical: 10,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  pendingTransfer: {
+    borderTopWidth: 1,
+    borderTopColor: '#334155',
+    paddingTop: 10,
+    marginTop: 6,
+  },
+  pendingTransferInfo: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  transferDecisionRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+  },
+  confirmTransferButton: {
+    flex: 1,
+    backgroundColor: '#16a34a',
+    paddingVertical: 9,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  rejectTransferButton: {
+    flex: 1,
+    backgroundColor: '#dc2626',
+    paddingVertical: 9,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  transferDecisionText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
   },
   formCard: {
     backgroundColor: '#1e293b',
@@ -858,6 +1468,75 @@ const styles = StyleSheet.create({
     color: '#ef4444',
     fontSize: 13,
     fontWeight: '700',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.8)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  expenseDetailsCard: {
+    maxHeight: '85%',
+    backgroundColor: '#1e293b',
+    borderRadius: 12,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#475569',
+  },
+  detailsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 18,
+  },
+  detailsTitle: {
+    color: '#f8fafc',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  closeDetailsBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#334155',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  closeDetailsText: {
+    color: '#f8fafc',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  detailsExpenseTitle: {
+    color: '#f8fafc',
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  detailsAmount: {
+    color: '#fbbf24',
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 4,
+    marginBottom: 16,
+  },
+  detailsLabel: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 10,
+    textTransform: 'uppercase',
+  },
+  detailsValue: {
+    color: '#f8fafc',
+    fontSize: 14,
+    marginTop: 3,
+  },
+  detailsReceiptImage: {
+    width: '100%',
+    height: 220,
+    resizeMode: 'cover',
+    borderRadius: 8,
+    marginTop: 6,
   },
   emptyText: {
     color: '#64748b',
