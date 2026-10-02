@@ -1,45 +1,155 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 
 from app.core.database import get_db
-from app.models.base import User, Expense, Settlement
+from app.core.security import verify_password, get_password_hash, create_access_token
+from app.models.base import User, Group, Expense
 from app.schemas.expense import (
-    UserCreate,
-    UserResponse,
+    UserOut,
+    GroupCreate,
+    GroupJoin,
+    GroupOut,
     ExpenseCreate,
-    ExpenseResponse,
-    SettlementCreate,
-    BalanceResponse,
+    ExpenseOut,
 )
+from pydantic import BaseModel, EmailStr
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
+from app.core.config import settings
 
 router = APIRouter()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
-@router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def create_user(payload: UserCreate, db: Session = Depends(get_db)):
-    existing = db.query(User).filter(User.email == payload.email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    user = User(name=payload.name, email=payload.email)
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+# --- AUTH SCHEMAS & HELPERS ---
+class RegisterPayload(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+
+
+class LoginPayload(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user_id: int
+    name: str
+
+
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Nieprawidłowy token uwierzytelniający",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id_str = payload.get("sub")
+        if user_id_str is None:
+            raise credentials_exception
+        user_id = int(user_id_str)
+    except (JWTError, ValueError):
+        raise credentials_exception
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise credentials_exception
     return user
 
 
-@router.post("/expenses", response_model=ExpenseResponse, status_code=status.HTTP_201_CREATED)
-def create_expense(payload: ExpenseCreate, db: Session = Depends(get_db)):
-    payer = db.query(User).filter(User.id == payload.payer_id).first()
-    if not payer:
-        raise HTTPException(status_code=404, detail="Payer not found")
+# --- AUTH ENDPOINTS ---
+@router.post("/auth/register", response_model=TokenResponse)
+def register(payload: RegisterPayload, db: Session = Depends(get_db)):
+    existing = db.query(User).filter(User.email == payload.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Użytkownik o takim emailu już istnieje.")
+
+    user = User(
+        name=payload.name,
+        email=payload.email,
+        hashed_password=get_password_hash(payload.password),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    token = create_access_token({"sub": str(user.id)})
+    return {"access_token": token, "token_type": "bearer", "user_id": user.id, "name": user.name}
+
+
+@router.post("/auth/login", response_model=TokenResponse)
+def login(payload: LoginPayload, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == payload.email).first()
+    if not user or not verify_password(payload.password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Błędny email lub hasło.")
+
+    token = create_access_token({"sub": str(user.id)})
+    return {"access_token": token, "token_type": "bearer", "user_id": user.id, "name": user.name}
+
+
+# --- GROUP (LOBBY) ENDPOINTS ---
+@router.post("/groups", response_model=GroupOut)
+def create_group(
+    payload: GroupCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    group = Group(name=payload.name)
+    group.members.append(current_user)
+    db.add(group)
+    db.commit()
+    db.refresh(group)
+    return group
+
+
+@router.post("/groups/join", response_model=GroupOut)
+def join_group(
+    payload: GroupJoin,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    group = db.query(Group).filter(Group.join_code == payload.join_code.strip().upper()).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Nie znaleziono grupy o takim kodzie.")
+
+    if current_user in group.members:
+        raise HTTPException(status_code=400, detail="Już należysz do tej grupy.")
+
+    group.members.append(current_user)
+    db.commit()
+    db.refresh(group)
+    return group
+
+
+@router.get("/groups/my", response_model=List[GroupOut])
+def get_my_groups(current_user: User = Depends(get_current_user)):
+    return current_user.groups
+
+
+# --- EXPENSE ENDPOINTS PER GROUP ---
+@router.post("/expenses", response_model=ExpenseOut)
+def add_expense(
+    payload: ExpenseCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    group = db.query(Group).filter(Group.id == payload.group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Grupa nie istnieje.")
+
+    if current_user not in group.members:
+        raise HTTPException(status_code=403, detail="Nie masz dostępu do tej grupy.")
 
     expense = Expense(
         title=payload.title,
         amount=payload.amount,
         payer_id=payload.payer_id,
+        group_id=payload.group_id,
     )
     db.add(expense)
     db.commit()
@@ -47,59 +157,58 @@ def create_expense(payload: ExpenseCreate, db: Session = Depends(get_db)):
     return expense
 
 
-@router.get("/expenses", response_model=List[ExpenseResponse])
-def get_expenses(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
-    return db.query(Expense).order_by(Expense.created_at.desc()).offset(skip).limit(limit).all()
+@router.get("/groups/{group_id}/expenses", response_model=List[ExpenseOut])
+def get_group_expenses(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group or current_user not in group.members:
+        raise HTTPException(status_code=403, detail="Brak dostępu do wydatków tej grupy.")
+
+    return db.query(Expense).filter(Expense.group_id == group_id).order_by(Expense.created_at.desc()).all()
 
 
-@router.post("/settle", status_code=status.HTTP_201_CREATED)
-def settle_balance(payload: SettlementCreate, db: Session = Depends(get_db)):
-    settlement = Settlement(
-        payer_id=payload.payer_id,
-        receiver_id=payload.receiver_id,
-        amount=payload.amount,
-    )
-    db.add(settlement)
-    db.commit()
-    return {"status": "success", "message": "Settlement recorded"}
+# --- BALANCE CALCULATION PER GROUP ---
+@router.get("/groups/{group_id}/balance")
+def get_group_balance(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group or current_user not in group.members:
+        raise HTTPException(status_code=403, detail="Brak dostępu do tej grupy.")
 
+    members = group.members
+    num_members = len(members)
+    if num_members < 2:
+        return {"summary": "Zaproś drugą osobę do lobby, aby widzieć rozliczenia.", "balances": {}}
 
-@router.get("/balance", response_model=BalanceResponse)
-def get_balance(user_a_id: int, user_b_id: int, db: Session = Depends(get_db)):
-    user_a = db.query(User).filter(User.id == user_a_id).first()
-    user_b = db.query(User).filter(User.id == user_b_id).first()
+    expenses = db.query(Expense).filter(Expense.group_id == group_id).all()
 
-    if not user_a or not user_b:
-        raise HTTPException(status_code=404, detail="One or both users not found")
+    # Inicjalizacja bilansu netto: user_id -> kwota w groszach (dodatnia = nadpłacił, ujemna = jest dłużny)
+    net_balances = {m.id: 0 for m in members}
 
-    # 1. Total expenses paid by each user
-    spent_a = db.query(func.coalesce(func.sum(Expense.amount), 0)).filter(Expense.payer_id == user_a_id).scalar()
-    spent_b = db.query(func.coalesce(func.sum(Expense.amount), 0)).filter(Expense.payer_id == user_b_id).scalar()
+    for exp in expenses:
+        share = exp.amount // num_members
+        for m in members:
+            net_balances[m.id] -= share
+        net_balances[exp.payer_id] += exp.amount
 
-    # 2. Total direct settlements between them
-    settled_a_to_b = db.query(func.coalesce(func.sum(Settlement.amount), 0)).filter(
-        Settlement.payer_id == user_a_id, Settlement.receiver_id == user_b_id
-    ).scalar()
+    my_balance_cents = net_balances.get(current_user.id, 0)
+    my_balance_pln = my_balance_cents / 100
 
-    settled_b_to_a = db.query(func.coalesce(func.sum(Settlement.amount), 0)).filter(
-        Settlement.payer_id == user_b_id, Settlement.receiver_id == user_a_id
-    ).scalar()
-
-    # Mathematical formulation for two-person 50/50 split:
-    # Net balance > 0 means User B owes User A.
-    # Net balance < 0 means User A owes User B.
-    net = ((spent_a - spent_b) // 2) - settled_b_to_a + settled_a_to_b
-
-    if net > 0:
-        summary = f"{user_b.name} owes {user_a.name} {net / 100:.2f} PLN"
-    elif net < 0:
-        summary = f"{user_a.name} owes {user_b.name} {abs(net) / 100:.2f} PLN"
+    if my_balance_pln > 0:
+        summary = f"Grupa jest Ci winna: {my_balance_pln:.2f} PLN"
+    elif my_balance_pln < 0:
+        summary = f"Jesteś winny grupie: {abs(my_balance_pln):.2f} PLN"
     else:
-        summary = "All settled up! Balance is zero."
+        summary = "Wszystko rozliczone na czysto (0.00 PLN)"
 
-    return BalanceResponse(
-        user_a_id=user_a_id,
-        user_b_id=user_b_id,
-        net_balance=net,
-        summary=summary,
-    )
+    return {
+        "summary": summary,
+        "my_net_balance": my_balance_cents,
+        "all_balances": net_balances,
+    }
