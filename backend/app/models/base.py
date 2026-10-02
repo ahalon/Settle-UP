@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 import secrets
 import string
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Table
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Table, Text
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -57,6 +57,8 @@ class Expense(Base):
     payer_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     group_id = Column(Integer, ForeignKey("groups.id"), nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    description = Column(String, nullable=True)
+    receipt_image = Column(Text, nullable=True)
 
     # Relacje
     payer = relationship("User", back_populates="expenses_paid")

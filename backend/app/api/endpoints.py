@@ -6,7 +6,7 @@ from fastapi import status
 from app.core.database import get_db
 from app.core.security import verify_password, get_password_hash, create_access_token
 from app.models.base import User, Group, Expense
-from app.schemas.expense import (
+from app.schemas import (
     UserOut,
     GroupCreate,
     GroupJoin,
@@ -151,6 +151,8 @@ def add_expense(
         amount=payload.amount,
         payer_id=payload.payer_id,
         group_id=payload.group_id,
+        description=payload.description,
+        receipt_image=payload.receipt_image,
     )
     db.add(expense)
     db.commit()
@@ -174,9 +176,9 @@ def get_group_expenses(
 def delete_expense(
     expense_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user)
 ):
-    expense = db.query(models.Expense).filter(models.Expense.id == expense_id).first()
+    expense = db.query(Expense).filter(Expense.id == expense_id).first()
     if not expense:
         raise HTTPException(status_code=404, detail="Wydatek nie istnieje")
 

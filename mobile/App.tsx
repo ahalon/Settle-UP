@@ -8,16 +8,17 @@ import {
   Alert,
   ActivityIndicator,
   FlatList,
-  SafeAreaView,
   StatusBar,
   ScrollView,
-  Platform,
+  Image,
 } from 'react-native';
 import axios from 'axios';
+import * as ImagePicker from 'expo-image-picker';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import AuthScreen from './LoginScreen';
 import { getToken, removeToken, getUserData } from './authStorage';
 
-const API_URL = 'http://192.168.1.242:8000';
+const API_URL = 'http://192.168.1.69:8000';
 
 interface User {
   id: number;
@@ -39,6 +40,7 @@ interface Expense {
   payer_id: number;
   group_id: number;
   created_at: string;
+  description?: string | null;
 }
 
 interface BalanceResponse {
@@ -46,6 +48,16 @@ interface BalanceResponse {
   my_net_balance?: number;
   all_balances?: Record<string, number>;
 }
+
+// Zabezpieczenie przed błędem "ReadableNativeArray to String"
+const getErrorMessage = (err: any, fallback: string): string => {
+  const detail = err.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((d: any) => d.msg || JSON.stringify(d)).join('\n');
+  }
+  return fallback;
+};
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<{ id: number; name: string } | null>(null);
@@ -58,16 +70,18 @@ export default function App() {
   const [newGroupName, setNewGroupName] = useState('');
   const [joinCodeInput, setJoinCodeInput] = useState('');
 
-  // Stan wydatków wewnątrz wybranego lobby
+  // Stan wydatków wewnątrz lobby
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [balance, setBalance] = useState<BalanceResponse | null>(null);
   const [selectedPayerId, setSelectedPayerId] = useState<number | null>(null);
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState('');
+  const [description, setDescription] = useState('');
+  const [receiptImage, setReceiptImage] = useState<string | null>(null);
+  const [isExpenseFormOpen, setIsExpenseFormOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Inicjalizacja sesji
   useEffect(() => {
     const checkAuth = async () => {
       try {
@@ -87,7 +101,6 @@ export default function App() {
     checkAuth();
   }, []);
 
-  // Pobieranie listy lobby zalogowanego usera
   const loadMyGroups = async (authToken: string) => {
     try {
       const res = await axios.get<Group[]>(`${API_URL}/api/groups/my`, {
@@ -105,7 +118,6 @@ export default function App() {
     }
   }, [token]);
 
-  // Pobieranie danych konkretnego lobby (wydatki + bilans)
   const loadGroupDetails = async (groupId: number, authToken: string) => {
     try {
       const headers = { Authorization: `Bearer ${authToken}` };
@@ -136,7 +148,6 @@ export default function App() {
     setActiveGroup(null);
   };
 
-  // Tworzenie lobby
   const handleCreateGroup = async () => {
     if (!newGroupName.trim() || !token) return;
     setLoading(true);
@@ -150,13 +161,12 @@ export default function App() {
       await loadMyGroups(token);
       setActiveGroup(res.data);
     } catch (err: any) {
-      Alert.alert('Błąd', err.response?.data?.detail || 'Nie udało się stworzyć grupy');
+      Alert.alert('Błąd', getErrorMessage(err, 'Nie udało się stworzyć grupy'));
     } finally {
       setLoading(false);
     }
   };
 
-  // Dołączanie do lobby po kodzie
   const handleJoinGroup = async () => {
     if (!joinCodeInput.trim() || !token) return;
     setLoading(true);
@@ -170,13 +180,30 @@ export default function App() {
       await loadMyGroups(token);
       setActiveGroup(res.data);
     } catch (err: any) {
-      Alert.alert('Błąd', err.response?.data?.detail || 'Nieprawidłowy kod');
+      Alert.alert('Błąd', getErrorMessage(err, 'Nieprawidłowy kod'));
     } finally {
       setLoading(false);
     }
   };
 
-  // Dodawanie wydatku wewnątrz lobby
+  const pickReceiptImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Brak uprawnień', 'Potrzebujemy dostępu do galerii, aby dodać paragon.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: false,
+      quality: 0.8,
+    });
+
+    if (!result.canceled && result.assets && result.assets.length > 0) {
+      setReceiptImage(result.assets[0].uri);
+    }
+  };
+
   const handleAddExpense = async () => {
     if (!title || !amount || !selectedPayerId || !activeGroup || !token) {
       Alert.alert('Błąd', 'Wypełnij wszystkie pola wydatku');
@@ -194,18 +221,53 @@ export default function App() {
           amount: amountInCents,
           payer_id: selectedPayerId,
           group_id: activeGroup.id,
+          description: description.trim() || null,
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
       setTitle('');
+      setDescription('');
       setAmount('');
+      setReceiptImage(null);
+      setIsExpenseFormOpen(false);
       await loadGroupDetails(activeGroup.id, token);
     } catch (err: any) {
-      Alert.alert('Błąd', err.response?.data?.detail || 'Błąd zapisu wydatku');
+      Alert.alert('Błąd', getErrorMessage(err, 'Błąd zapisu wydatku'));
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleDeleteExpense = (expenseId: number) => {
+    Alert.alert(
+      'Usuń wydatek',
+      'Czy na pewno chcesz usunąć ten wydatek?',
+      [
+        { text: 'Anuluj', style: 'cancel' },
+        {
+          text: 'Usuń',
+          style: 'destructive',
+          onPress: async () => {
+            if (!token || !activeGroup) return;
+            try {
+              await axios.delete(`${API_URL}/api/expenses/${expenseId}`, {
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              await loadGroupDetails(activeGroup.id, token);
+            } catch (err: any) {
+              Alert.alert('Błąd', getErrorMessage(err, 'Nie udało się usunąć wydatku'));
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const getPayerName = (payerId: number) => {
+    if (payerId === currentUser?.id) return 'Ty';
+    const member = activeGroup?.members.find((m) => m.id === payerId);
+    return member ? member.name : `ID: ${payerId}`;
   };
 
   if (isInitializing) {
@@ -230,13 +292,6 @@ export default function App() {
     );
   }
 
-  // Pomocnik do wyciągania imienia płatnika
-  const getPayerName = (payerId: number) => {
-    if (payerId === currentUser?.id) return 'Ty';
-    const member = activeGroup?.members.find((m) => m.id === payerId);
-    return member ? member.name : `ID: ${payerId}`;
-  };
-
   // --- EKRAN 1: WIDOK WEWNĄTRZ LOBBY ---
   if (activeGroup) {
     return (
@@ -245,7 +300,7 @@ export default function App() {
 
         <View style={styles.navBar}>
           <TouchableOpacity onPress={() => setActiveGroup(null)} style={styles.backBtn}>
-            <Text style={styles.backBtnText}>← Wróć do lobby</Text>
+            <Text style={styles.backBtnText}>← Wróć</Text>
           </TouchableOpacity>
           <Text style={styles.groupHeaderName}>{activeGroup.name}</Text>
         </View>
@@ -262,58 +317,101 @@ export default function App() {
 
         {/* Formularz wydatku */}
         <View style={styles.formCard}>
-          <Text style={styles.sectionTitle}>Dodaj wydatek</Text>
-
-          <Text style={styles.subLabel}>Kto zapłacił?</Text>
-          <View style={styles.payerSelector}>
-            {activeGroup.members.map((m) => (
-              <TouchableOpacity
-                key={m.id}
-                style={[
-                  styles.payerOption,
-                  selectedPayerId === m.id && styles.payerOptionActive,
-                ]}
-                onPress={() => setSelectedPayerId(m.id)}
-              >
-                <Text
-                  style={[
-                    styles.payerOptionText,
-                    selectedPayerId === m.id && styles.payerOptionTextActive,
-                  ]}
-                >
-                  {m.id === currentUser?.id ? 'Ja' : m.name}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          <TextInput
-            style={styles.input}
-            placeholder="Tytuł wydatku"
-            placeholderTextColor="#64748b"
-            value={title}
-            onChangeText={setTitle}
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Kwota (PLN)"
-            placeholderTextColor="#64748b"
-            keyboardType="numeric"
-            value={amount}
-            onChangeText={setAmount}
-          />
-
           <TouchableOpacity
-            style={styles.actionBtn}
-            onPress={handleAddExpense}
-            disabled={loading}
+            style={[styles.formHeader, isExpenseFormOpen && styles.formHeaderOpen]}
+            onPress={() => setIsExpenseFormOpen(!isExpenseFormOpen)}
+            activeOpacity={0.8}
           >
-            {loading ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.actionBtnText}>Zapisz wydatek</Text>
-            )}
+            <Text style={styles.formHeaderTitle}>Dodaj wydatek</Text>
+            <Text style={styles.formToggle}>{isExpenseFormOpen ? '−' : '+'}</Text>
           </TouchableOpacity>
+
+          {isExpenseFormOpen && (
+            <>
+              <Text style={styles.subLabel}>Kto zapłacił?</Text>
+              <View style={styles.payerSelector}>
+                {activeGroup.members.map((m) => (
+                  <TouchableOpacity
+                    key={m.id}
+                    style={[
+                      styles.payerOption,
+                      selectedPayerId === m.id && styles.payerOptionActive,
+                    ]}
+                    onPress={() => setSelectedPayerId(m.id)}
+                  >
+                    <Text
+                      style={[
+                        styles.payerOptionText,
+                        selectedPayerId === m.id && styles.payerOptionTextActive,
+                      ]}
+                    >
+                      {m.id === currentUser?.id ? 'Ja' : m.name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <TextInput
+                style={styles.input}
+                placeholder="Tytuł wydatku"
+                placeholderTextColor="#64748b"
+                value={title}
+                onChangeText={setTitle}
+              />
+              <TextInput
+                style={styles.input}
+                placeholder="Kwota (PLN)"
+                placeholderTextColor="#64748b"
+                keyboardType="numeric"
+                value={amount}
+                onChangeText={setAmount}
+              />
+              <TextInput
+                style={[styles.input, styles.descriptionInput]}
+                placeholder="Opis (opcjonalnie)"
+                placeholderTextColor="#64748b"
+                value={description}
+                onChangeText={setDescription}
+                multiline
+                numberOfLines={3}
+                textAlignVertical="top"
+              />
+
+              <View style={styles.receiptContainer}>
+                <View style={styles.receiptRow}>
+                  <TouchableOpacity style={styles.receiptBtn} onPress={pickReceiptImage}>
+                    <Text style={styles.receiptBtnText}>
+                      {receiptImage ? '📷 Zmień zdjęcie' : '📷 Dodaj paragon'}
+                    </Text>
+                  </TouchableOpacity>
+                  {receiptImage && (
+                    <TouchableOpacity onPress={() => setReceiptImage(null)} style={styles.removeReceiptBtn}>
+                      <Text style={styles.removeReceiptText}>Usuń</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* Podgląd wybranego zdjęcia */}
+                {receiptImage && (
+                  <View style={styles.previewWrapper}>
+                    <Image source={{ uri: receiptImage }} style={styles.receiptPreview} />
+                  </View>
+                )}
+              </View>
+
+              <TouchableOpacity
+                style={styles.actionBtn}
+                onPress={handleAddExpense}
+                disabled={loading}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.actionBtnText}>Zapisz wydatek</Text>
+                )}
+              </TouchableOpacity>
+            </>
+          )}
         </View>
 
         {/* Lista wydatków */}
@@ -330,13 +428,26 @@ export default function App() {
             refreshing={refreshing}
             renderItem={({ item }) => (
               <View style={styles.expenseItem}>
-                <View>
+                <View style={{ flex: 1 }}>
                   <Text style={styles.expenseTitle}>{item.title}</Text>
+                  {item.description && (
+                    <Text style={styles.expenseDescription}>{item.description}</Text>
+                  )}
                   <Text style={styles.expenseSub}>Płatnik: {getPayerName(item.payer_id)}</Text>
                 </View>
-                <Text style={styles.expenseAmount}>
-                  {(item.amount / 100).toFixed(2)} PLN
-                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <Text style={styles.expenseAmount}>
+                    {(item.amount / 100).toFixed(2)} PLN
+                  </Text>
+                  {item.payer_id === currentUser?.id && (
+                    <TouchableOpacity
+                      onPress={() => handleDeleteExpense(item.id)}
+                      style={styles.deleteBtn}
+                    >
+                      <Text style={styles.deleteBtnText}>✕</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               </View>
             )}
             ListEmptyComponent={
@@ -361,7 +472,6 @@ export default function App() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Sekcja Tworzenia */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Utwórz nowe lobby</Text>
           <TextInput
@@ -380,7 +490,6 @@ export default function App() {
           </TouchableOpacity>
         </View>
 
-        {/* Sekcja Dołączania */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Dołącz po kodzie</Text>
           <TextInput
@@ -400,7 +509,6 @@ export default function App() {
           </TouchableOpacity>
         </View>
 
-        {/* Twoje lobby */}
         <Text style={[styles.sectionTitle, { marginTop: 12 }]}>Twoje aktywne lobby</Text>
         {myGroups.map((g) => (
           <TouchableOpacity
@@ -431,7 +539,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0f172a',
     paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 10 : 10,
   },
   loadingContainer: {
     flex: 1,
@@ -571,11 +678,41 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     marginBottom: 10,
   },
+  formHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#f59e0b',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#fbbf24',
+    shadowColor: '#f59e0b',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 4,
+  },
+  formHeaderOpen: {
+    marginBottom: 12,
+  },
+  formHeaderTitle: {
+    color: '#1e293b',
+    fontSize: 16,
+    fontWeight: '800',
+  },
   sectionTitle: {
     color: '#f8fafc',
     fontSize: 15,
     fontWeight: '700',
     marginBottom: 8,
+  },
+  formToggle: {
+    color: '#1e293b',
+    fontSize: 25,
+    fontWeight: '800',
+    lineHeight: 25,
   },
   subLabel: {
     color: '#94a3b8',
@@ -613,6 +750,56 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     fontSize: 14,
   },
+  descriptionInput: {
+    minHeight: 72,
+  },
+  receiptContainer: {
+    marginBottom: 10,
+  },
+  receiptRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+  },
+  receiptBtn: {
+    flex: 1,
+    backgroundColor: '#334155',
+    paddingVertical: 9,
+    borderRadius: 6,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#475569',
+  },
+  receiptBtnText: {
+    color: '#38bdf8',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  removeReceiptBtn: {
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    backgroundColor: '#ef444420',
+    borderRadius: 6,
+  },
+  removeReceiptText: {
+    color: '#ef4444',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  previewWrapper: {
+    marginTop: 8,
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  receiptPreview: {
+    width: '100%',
+    height: 160,
+    resizeMode: 'cover',
+    borderRadius: 8,
+  },
   actionBtn: {
     backgroundColor: '#2563eb',
     paddingVertical: 10,
@@ -644,6 +831,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  expenseDescription: {
+    color: '#cbd5e1',
+    fontSize: 12,
+    marginTop: 2,
+  },
   expenseSub: {
     color: '#94a3b8',
     fontSize: 11,
@@ -652,6 +844,19 @@ const styles = StyleSheet.create({
   expenseAmount: {
     color: '#f8fafc',
     fontSize: 14,
+    fontWeight: '700',
+  },
+  deleteBtn: {
+    backgroundColor: '#ef444420',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#ef444450',
+  },
+  deleteBtnText: {
+    color: '#ef4444',
+    fontSize: 13,
     fontWeight: '700',
   },
   emptyText: {

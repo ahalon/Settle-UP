@@ -16,6 +16,16 @@ interface AuthScreenProps {
   onLoginSuccess: (user: { id: number; name: string }) => void;
 }
 
+// Bezpieczne parsowanie błędów z FastAPI (blokuje crash ReadableNativeArray)
+const getErrorMessage = (err: any, fallback: string): string => {
+  const detail = err.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((d: any) => d.msg || JSON.stringify(d)).join('\n');
+  }
+  return fallback;
+};
+
 export default function AuthScreen({ apiUrl, onLoginSuccess }: AuthScreenProps) {
   const [isLoginMode, setIsLoginMode] = useState(true);
   const [name, setName] = useState('');
@@ -24,7 +34,11 @@ export default function AuthScreen({ apiUrl, onLoginSuccess }: AuthScreenProps) 
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async () => {
-    if (!email || !password || (!isLoginMode && !name)) {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPassword = password.trim();
+    const cleanName = name.trim();
+
+    if (!cleanEmail || !cleanPassword || (!isLoginMode && !cleanName)) {
       Alert.alert('Błąd', 'Uzupełnij wszystkie wymagane pola');
       return;
     }
@@ -33,8 +47,8 @@ export default function AuthScreen({ apiUrl, onLoginSuccess }: AuthScreenProps) 
     try {
       const endpoint = isLoginMode ? '/api/auth/login' : '/api/auth/register';
       const payload = isLoginMode
-        ? { email, password }
-        : { name, email, password };
+        ? { email: cleanEmail, password: cleanPassword }
+        : { name: cleanName, email: cleanEmail, password: cleanPassword };
 
       const response = await axios.post(`${apiUrl}${endpoint}`, payload);
       const { access_token, user_id, name: userName } = response.data;
@@ -44,7 +58,7 @@ export default function AuthScreen({ apiUrl, onLoginSuccess }: AuthScreenProps) 
 
       onLoginSuccess({ id: user_id, name: userName });
     } catch (err: any) {
-      const message = err.response?.data?.detail || 'Wystąpił błąd autoryzacji';
+      const message = getErrorMessage(err, 'Wystąpił błąd autoryzacji');
       Alert.alert('Błąd', message);
     } finally {
       setLoading(false);
@@ -76,6 +90,7 @@ export default function AuthScreen({ apiUrl, onLoginSuccess }: AuthScreenProps) 
           placeholderTextColor="#64748b"
           keyboardType="email-address"
           autoCapitalize="none"
+          autoCorrect={false}
           value={email}
           onChangeText={setEmail}
         />
