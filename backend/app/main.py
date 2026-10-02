@@ -1,10 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from app.core.database import engine, Base
-from app.models.base import User, Expense, Settlement
+from app.core.database import engine
+from app.models.base import Base
 from app.api.endpoints import router as api_router
 
+# Automatyczne utworzenie wszystkich tabel zdefiniowanych w Base (users, groups, group_members, expenses)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="SettleUp API")
@@ -20,6 +20,6 @@ app.add_middleware(
 app.include_router(api_router, prefix="/api")
 
 
-@app.get("/health")
-def health_check():
-    return {"status": "healthy"}
+@app.get("/")
+def root():
+    return {"message": "SettleUp API działa"}

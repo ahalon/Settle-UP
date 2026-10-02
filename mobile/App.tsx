@@ -10,6 +10,8 @@ import {
   FlatList,
   SafeAreaView,
   StatusBar,
+  ScrollView,
+  Platform,
 } from 'react-native';
 import axios from 'axios';
 import AuthScreen from './LoginScreen';
@@ -23,19 +25,26 @@ interface User {
   email: string;
 }
 
+interface Group {
+  id: number;
+  name: string;
+  join_code: string;
+  members: User[];
+}
+
 interface Expense {
   id: number;
   title: string;
   amount: number;
   payer_id: number;
+  group_id: number;
   created_at: string;
 }
 
-interface Balance {
-  user_a_id: number;
-  user_b_id: number;
-  net_balance: number;
+interface BalanceResponse {
   summary: string;
+  my_net_balance?: number;
+  all_balances?: Record<string, number>;
 }
 
 export default function App() {
@@ -43,16 +52,22 @@ export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
 
-  const [users, setUsers] = useState<User[]>([]);
-  const [balance, setBalance] = useState<Balance | null>(null);
-  const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [selectedPayerId, setSelectedPayerId] = useState<number | null>(null);
+  // Stan lobby
+  const [myGroups, setMyGroups] = useState<Group[]>([]);
+  const [activeGroup, setActiveGroup] = useState<Group | null>(null);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [joinCodeInput, setJoinCodeInput] = useState('');
 
+  // Stan wydatków wewnątrz wybranego lobby
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [balance, setBalance] = useState<BalanceResponse | null>(null);
+  const [selectedPayerId, setSelectedPayerId] = useState<number | null>(null);
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState('');
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
+  // Inicjalizacja sesji
   useEffect(() => {
     const checkAuth = async () => {
       try {
@@ -64,7 +79,7 @@ export default function App() {
           setSelectedPayerId(storedUser.id);
         }
       } catch (e) {
-        console.log('Błąd odczytu sesji', e);
+        console.log('Błąd autoryzacji:', e);
       } finally {
         setIsInitializing(false);
       }
@@ -72,48 +87,99 @@ export default function App() {
     checkAuth();
   }, []);
 
-  const loadData = async (authToken: string) => {
+  // Pobieranie listy lobby zalogowanego usera
+  const loadMyGroups = async (authToken: string) => {
     try {
-      const authHeaders = {
+      const res = await axios.get<Group[]>(`${API_URL}/api/groups/my`, {
         headers: { Authorization: `Bearer ${authToken}` },
-      };
-
-      const usersRes = await axios.get<User[]>(`${API_URL}/api/users`, authHeaders);
-      setUsers(usersRes.data);
-
-      if (usersRes.data.length >= 2) {
-        const uA = usersRes.data[0].id;
-        const uB = usersRes.data[1].id;
-
-        const balanceRes = await axios.get<Balance>(`${API_URL}/api/balance`, {
-          params: { user_a_id: uA, user_b_id: uB },
-          ...authHeaders,
-        });
-        setBalance(balanceRes.data);
-      }
-
-      const expensesRes = await axios.get<Expense[]>(`${API_URL}/api/expenses`, authHeaders);
-      setExpenses(expensesRes.data);
+      });
+      setMyGroups(res.data);
     } catch (err) {
-      console.log('Błąd pobierania danych:', err);
+      console.log('Błąd pobierania grup:', err);
     }
   };
 
   useEffect(() => {
     if (token) {
-      loadData(token);
+      loadMyGroups(token);
     }
   }, [token]);
+
+  // Pobieranie danych konkretnego lobby (wydatki + bilans)
+  const loadGroupDetails = async (groupId: number, authToken: string) => {
+    try {
+      const headers = { Authorization: `Bearer ${authToken}` };
+
+      const [expRes, balRes] = await Promise.all([
+        axios.get<Expense[]>(`${API_URL}/api/groups/${groupId}/expenses`, { headers }),
+        axios.get<BalanceResponse>(`${API_URL}/api/groups/${groupId}/balance`, { headers }),
+      ]);
+
+      setExpenses(expRes.data);
+      setBalance(balRes.data);
+    } catch (err) {
+      console.log('Błąd pobierania szczegółów grupy:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (activeGroup && token) {
+      loadGroupDetails(activeGroup.id, token);
+      setSelectedPayerId(currentUser?.id || null);
+    }
+  }, [activeGroup]);
 
   const handleLogout = async () => {
     await removeToken();
     setToken(null);
     setCurrentUser(null);
+    setActiveGroup(null);
   };
 
+  // Tworzenie lobby
+  const handleCreateGroup = async () => {
+    if (!newGroupName.trim() || !token) return;
+    setLoading(true);
+    try {
+      const res = await axios.post<Group>(
+        `${API_URL}/api/groups`,
+        { name: newGroupName.trim() },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setNewGroupName('');
+      await loadMyGroups(token);
+      setActiveGroup(res.data);
+    } catch (err: any) {
+      Alert.alert('Błąd', err.response?.data?.detail || 'Nie udało się stworzyć grupy');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Dołączanie do lobby po kodzie
+  const handleJoinGroup = async () => {
+    if (!joinCodeInput.trim() || !token) return;
+    setLoading(true);
+    try {
+      const res = await axios.post<Group>(
+        `${API_URL}/api/groups/join`,
+        { join_code: joinCodeInput.trim().toUpperCase() },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setJoinCodeInput('');
+      await loadMyGroups(token);
+      setActiveGroup(res.data);
+    } catch (err: any) {
+      Alert.alert('Błąd', err.response?.data?.detail || 'Nieprawidłowy kod');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Dodawanie wydatku wewnątrz lobby
   const handleAddExpense = async () => {
-    if (!title || !amount || !selectedPayerId || !token) {
-      Alert.alert('Błąd', 'Uzupełnij tytuł, kwotę i wybierz płatnika!');
+    if (!title || !amount || !selectedPayerId || !activeGroup || !token) {
+      Alert.alert('Błąd', 'Wypełnij wszystkie pola wydatku');
       return;
     }
 
@@ -127,17 +193,16 @@ export default function App() {
           title,
           amount: amountInCents,
           payer_id: selectedPayerId,
+          group_id: activeGroup.id,
         },
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
+        { headers: { Authorization: `Bearer ${token}` } }
       );
 
       setTitle('');
       setAmount('');
-      await loadData(token);
-    } catch (err) {
-      Alert.alert('Błąd', 'Nie udało się zapisać wydatku');
+      await loadGroupDetails(activeGroup.id, token);
+    } catch (err: any) {
+      Alert.alert('Błąd', err.response?.data?.detail || 'Błąd zapisu wydatku');
     } finally {
       setLoading(false);
     }
@@ -155,7 +220,7 @@ export default function App() {
     return (
       <AuthScreen
         apiUrl={API_URL}
-        onLoginSuccess={async (userData) => {
+        onLoginSuccess={async (userData: { id: number; name: string }) => {
           const freshToken = await getToken();
           setToken(freshToken);
           setCurrentUser(userData);
@@ -165,6 +230,125 @@ export default function App() {
     );
   }
 
+  // Pomocnik do wyciągania imienia płatnika
+  const getPayerName = (payerId: number) => {
+    if (payerId === currentUser?.id) return 'Ty';
+    const member = activeGroup?.members.find((m) => m.id === payerId);
+    return member ? member.name : `ID: ${payerId}`;
+  };
+
+  // --- EKRAN 1: WIDOK WEWNĄTRZ LOBBY ---
+  if (activeGroup) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="light-content" />
+
+        <View style={styles.navBar}>
+          <TouchableOpacity onPress={() => setActiveGroup(null)} style={styles.backBtn}>
+            <Text style={styles.backBtnText}>← Wróć do lobby</Text>
+          </TouchableOpacity>
+          <Text style={styles.groupHeaderName}>{activeGroup.name}</Text>
+        </View>
+
+        <View style={styles.codeCard}>
+          <Text style={styles.codeLabel}>KOD DOŁĄCZENIA DO TEGO LOBBY:</Text>
+          <Text style={styles.codeValue}>{activeGroup.join_code}</Text>
+        </View>
+
+        <View style={styles.balanceCard}>
+          <Text style={styles.balanceLabel}>Twój bilans w tej grupie:</Text>
+          <Text style={styles.balanceValue}>{balance?.summary || 'Ładowanie...'}</Text>
+        </View>
+
+        {/* Formularz wydatku */}
+        <View style={styles.formCard}>
+          <Text style={styles.sectionTitle}>Dodaj wydatek</Text>
+
+          <Text style={styles.subLabel}>Kto zapłacił?</Text>
+          <View style={styles.payerSelector}>
+            {activeGroup.members.map((m) => (
+              <TouchableOpacity
+                key={m.id}
+                style={[
+                  styles.payerOption,
+                  selectedPayerId === m.id && styles.payerOptionActive,
+                ]}
+                onPress={() => setSelectedPayerId(m.id)}
+              >
+                <Text
+                  style={[
+                    styles.payerOptionText,
+                    selectedPayerId === m.id && styles.payerOptionTextActive,
+                  ]}
+                >
+                  {m.id === currentUser?.id ? 'Ja' : m.name}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <TextInput
+            style={styles.input}
+            placeholder="Tytuł wydatku"
+            placeholderTextColor="#64748b"
+            value={title}
+            onChangeText={setTitle}
+          />
+          <TextInput
+            style={styles.input}
+            placeholder="Kwota (PLN)"
+            placeholderTextColor="#64748b"
+            keyboardType="numeric"
+            value={amount}
+            onChangeText={setAmount}
+          />
+
+          <TouchableOpacity
+            style={styles.actionBtn}
+            onPress={handleAddExpense}
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.actionBtnText}>Zapisz wydatek</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* Lista wydatków */}
+        <View style={styles.listContainer}>
+          <Text style={styles.sectionTitle}>Wydatki grupy</Text>
+          <FlatList
+            data={expenses}
+            keyExtractor={(item) => item.id.toString()}
+            onRefresh={async () => {
+              setRefreshing(true);
+              await loadGroupDetails(activeGroup.id, token);
+              setRefreshing(false);
+            }}
+            refreshing={refreshing}
+            renderItem={({ item }) => (
+              <View style={styles.expenseItem}>
+                <View>
+                  <Text style={styles.expenseTitle}>{item.title}</Text>
+                  <Text style={styles.expenseSub}>Płatnik: {getPayerName(item.payer_id)}</Text>
+                </View>
+                <Text style={styles.expenseAmount}>
+                  {(item.amount / 100).toFixed(2)} PLN
+                </Text>
+              </View>
+            )}
+            ListEmptyComponent={
+              <Text style={styles.emptyText}>Brak wydatków w tym lobby</Text>
+            }
+          />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // --- EKRAN 2: LISTA LOBBY (DASHBOARD) ---
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />
@@ -176,96 +360,68 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      <View style={styles.headerBox}>
-        <View style={styles.balanceCard}>
-          <Text style={styles.balanceLabel}>Aktualny stan:</Text>
-          <Text style={styles.balanceValue}>
-            {balance ? balance.summary : 'Brak danych o rozliczeniu'}
-          </Text>
-        </View>
-      </View>
-
-      <View style={styles.formCard}>
-        <Text style={styles.sectionTitle}>Dodaj wydatek</Text>
-
-        <View style={styles.payerSelector}>
-          {users.map((u) => (
-            <TouchableOpacity
-              key={u.id}
-              style={[
-                styles.payerOption,
-                selectedPayerId === u.id && styles.payerOptionActive,
-              ]}
-              onPress={() => setSelectedPayerId(u.id)}
-            >
-              <Text
-                style={[
-                  styles.payerOptionText,
-                  selectedPayerId === u.id && styles.payerOptionTextActive,
-                ]}
-              >
-                {u.id === currentUser?.id ? 'Ja' : u.name}
-              </Text>
-            </TouchableOpacity>
-          ))}
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        {/* Sekcja Tworzenia */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Utwórz nowe lobby</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Nazwa (np. Mieszkanie Kraków)"
+            placeholderTextColor="#64748b"
+            value={newGroupName}
+            onChangeText={setNewGroupName}
+          />
+          <TouchableOpacity
+            style={styles.actionBtn}
+            onPress={handleCreateGroup}
+            disabled={loading}
+          >
+            <Text style={styles.actionBtnText}>Stwórz lobby</Text>
+          </TouchableOpacity>
         </View>
 
-        <TextInput
-          style={styles.input}
-          placeholder="Tytuł wydatku"
-          placeholderTextColor="#64748b"
-          value={title}
-          onChangeText={setTitle}
-        />
-        <TextInput
-          style={styles.input}
-          placeholder="Kwota (PLN)"
-          placeholderTextColor="#64748b"
-          keyboardType="numeric"
-          value={amount}
-          onChangeText={setAmount}
-        />
+        {/* Sekcja Dołączania */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Dołącz po kodzie</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Wpisz 6-znakowy kod"
+            placeholderTextColor="#64748b"
+            autoCapitalize="characters"
+            value={joinCodeInput}
+            onChangeText={setJoinCodeInput}
+          />
+          <TouchableOpacity
+            style={[styles.actionBtn, styles.secondaryBtn]}
+            onPress={handleJoinGroup}
+            disabled={loading}
+          >
+            <Text style={styles.actionBtnText}>Dołącz do ekipy</Text>
+          </TouchableOpacity>
+        </View>
 
-        <TouchableOpacity
-          style={styles.addBtn}
-          onPress={handleAddExpense}
-          disabled={loading}
-        >
-          {loading ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.addBtnText}>Dodaj wydatek</Text>
-          )}
-        </TouchableOpacity>
-      </View>
-
-      <View style={styles.listContainer}>
-        <Text style={styles.sectionTitle}>Ostatnie wydatki</Text>
-        <FlatList
-          data={expenses}
-          keyExtractor={(item) => item.id.toString()}
-          onRefresh={async () => {
-            setRefreshing(true);
-            await loadData(token);
-            setRefreshing(false);
-          }}
-          refreshing={refreshing}
-          renderItem={({ item }) => (
-            <View style={styles.expenseItem}>
-              <View>
-                <Text style={styles.expenseTitle}>{item.title}</Text>
-                <Text style={styles.expenseSub}>ID płatnika: {item.payer_id}</Text>
-              </View>
-              <Text style={styles.expenseAmount}>
-                {(item.amount / 100).toFixed(2)} PLN
+        {/* Twoje lobby */}
+        <Text style={[styles.sectionTitle, { marginTop: 12 }]}>Twoje aktywne lobby</Text>
+        {myGroups.map((g) => (
+          <TouchableOpacity
+            key={g.id}
+            style={styles.groupCard}
+            onPress={() => setActiveGroup(g)}
+          >
+            <View>
+              <Text style={styles.groupName}>{g.name}</Text>
+              <Text style={styles.groupMembersCount}>
+                Członków: {g.members?.length || 1} • Kod: {g.join_code}
               </Text>
             </View>
-          )}
-          ListEmptyComponent={
-            <Text style={styles.emptyText}>Brak zarejestrowanych wydatków</Text>
-          }
-        />
-      </View>
+            <Text style={styles.groupArrow}>→</Text>
+          </TouchableOpacity>
+        ))}
+
+        {myGroups.length === 0 && (
+          <Text style={styles.emptyText}>Nie należysz jeszcze do żadnego lobby.</Text>
+        )}
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -275,6 +431,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0f172a',
     paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 10 : 10,
   },
   loadingContainer: {
     flex: 1,
@@ -282,20 +439,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  scrollContent: {
+    paddingBottom: 24,
+  },
   userBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 10,
+    marginTop: 8,
     marginBottom: 8,
   },
   userGreeting: {
     color: '#f8fafc',
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '700',
   },
   logoutBtn: {
-    paddingVertical: 4,
+    paddingVertical: 5,
     paddingHorizontal: 10,
     backgroundColor: '#334155',
     borderRadius: 6,
@@ -305,15 +465,95 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
-  headerBox: {
-    marginBottom: 14,
+  navBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    marginBottom: 12,
+    gap: 12,
   },
-  balanceCard: {
+  backBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: '#334155',
+    borderRadius: 6,
+  },
+  backBtnText: {
+    color: '#38bdf8',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  groupHeaderName: {
+    color: '#f8fafc',
+    fontSize: 18,
+    fontWeight: '700',
+    flex: 1,
+  },
+  codeCard: {
+    backgroundColor: '#1e293b',
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#38bdf8',
+    alignItems: 'center',
+  },
+  codeLabel: {
+    color: '#94a3b8',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  codeValue: {
+    color: '#38bdf8',
+    fontSize: 20,
+    fontWeight: '800',
+    letterSpacing: 2,
+    marginTop: 2,
+  },
+  card: {
     backgroundColor: '#1e293b',
     padding: 14,
     borderRadius: 10,
+    marginBottom: 12,
+  },
+  cardTitle: {
+    color: '#f8fafc',
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  groupCard: {
+    backgroundColor: '#1e293b',
+    padding: 14,
+    borderRadius: 8,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
     borderWidth: 1,
     borderColor: '#334155',
+  },
+  groupName: {
+    color: '#f8fafc',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  groupMembersCount: {
+    color: '#94a3b8',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  groupArrow: {
+    color: '#38bdf8',
+    fontSize: 20,
+    fontWeight: '700',
+  },
+  balanceCard: {
+    backgroundColor: '#1e293b',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 10,
   },
   balanceLabel: {
     color: '#94a3b8',
@@ -321,31 +561,36 @@ const styles = StyleSheet.create({
   },
   balanceValue: {
     color: '#38bdf8',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
     marginTop: 2,
   },
   formCard: {
     backgroundColor: '#1e293b',
-    padding: 14,
-    borderRadius: 10,
-    marginBottom: 14,
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 10,
   },
   sectionTitle: {
     color: '#f8fafc',
     fontSize: 15,
     fontWeight: '700',
-    marginBottom: 10,
+    marginBottom: 8,
+  },
+  subLabel: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginBottom: 4,
   },
   payerSelector: {
     flexDirection: 'row',
-    gap: 8,
-    marginBottom: 10,
+    gap: 6,
+    marginBottom: 8,
   },
   payerOption: {
     flex: 1,
     backgroundColor: '#334155',
-    paddingVertical: 8,
+    paddingVertical: 6,
     borderRadius: 6,
     alignItems: 'center',
   },
@@ -354,7 +599,7 @@ const styles = StyleSheet.create({
   },
   payerOptionText: {
     color: '#94a3b8',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
   },
   payerOptionTextActive: {
@@ -368,13 +613,16 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     fontSize: 14,
   },
-  addBtn: {
+  actionBtn: {
     backgroundColor: '#2563eb',
     paddingVertical: 10,
     borderRadius: 6,
     alignItems: 'center',
   },
-  addBtnText: {
+  secondaryBtn: {
+    backgroundColor: '#0284c7',
+  },
+  actionBtnText: {
     color: '#ffffff',
     fontWeight: '700',
     fontSize: 14,
@@ -389,7 +637,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   expenseTitle: {
     color: '#f8fafc',
@@ -409,7 +657,7 @@ const styles = StyleSheet.create({
   emptyText: {
     color: '#64748b',
     textAlign: 'center',
-    marginTop: 20,
+    marginTop: 14,
     fontSize: 13,
   },
 });
