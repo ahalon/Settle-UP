@@ -9,6 +9,7 @@ import {
   Group,
   JoinGroupPayload,
   MonthlySummaryResponse,
+  Notification,
   TokenResponse,
   Transfer,
 } from '../types';
@@ -55,6 +56,9 @@ export const getMonthlySummary = (groupId: number, token: string, year: number, 
     headers: authHeaders(token),
     params: { year, month },
   });
+
+export const getNotifications = (token: string) =>
+  axios.get<Notification[]>(`${API_URL}/api/notifications`, { headers: authHeaders(token) });
 
 export const addExpense = (token: string, payload: CreateExpensePayload) =>
   axios.post<Expense>(`${API_URL}/api/expenses`, payload, { headers: authHeaders(token) });

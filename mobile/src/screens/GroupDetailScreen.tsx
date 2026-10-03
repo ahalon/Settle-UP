@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Image, Keyboard, Modal, ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, FlatList, Image, Modal, ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { addExpense, declareTransfer, deleteExpense, deleteTransfer, decideTransfer, getGroupBalance, getGroupExpenses, getGroupTransfers, getMonthlySummary } from '../services/api';
@@ -68,12 +68,6 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
 
   useEffect(() => { loadDetails(); }, [group.id, token, year, month]);
 
-  const changeMonth = (offset: number) => {
-    const date = new Date(year, month - 1 + offset, 1);
-    setYear(date.getFullYear());
-    setMonth(date.getMonth() + 1);
-  };
-
   const handleAddExpense = async () => {
     if (!title.trim() || !amount.trim() || !selectedPayerId) {
       Alert.alert('Błąd', 'Wypełnij wszystkie pola wydatku');
@@ -140,7 +134,6 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
 
   const renderExpenseHeader = () => (
     <>
-      <MonthlySummaryCard year={year} month={month} summary={monthlySummary} onChangeMonth={changeMonth} />
       <View style={styles.formCard}>
         <TouchableOpacity style={[styles.formHeader, expenseFormOpen && styles.formHeaderOpen]} onPress={() => setExpenseFormOpen((value) => !value)}>
           <Text style={styles.formHeaderTitle}>Dodaj wydatek</Text><Text style={styles.formToggle}>{expenseFormOpen ? '−' : '+'}</Text>
@@ -182,6 +175,7 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
       <View style={styles.navBar}><TouchableOpacity onPress={onBack} style={styles.backBtn}><Text style={styles.backText}>← Wróć</Text></TouchableOpacity><Text style={styles.groupName}>{group.name}</Text></View>
       <View style={styles.codeCard}><Text style={styles.codeLabel}>KOD DOŁĄCZENIA DO TEGO LOBBY:</Text><Text style={styles.codeValue}>{group.join_code}</Text></View>
       <View style={styles.balanceCard}><Text style={styles.balanceLabel}>Twój bilans w tej grupie:</Text><Text style={styles.balanceValue}>{balance?.summary || 'Ładowanie...'}</Text></View>
+      <MonthlySummaryCard year={year} month={month} summary={monthlySummary} onSelectMonth={(nextYear, nextMonth) => { setYear(nextYear); setMonth(nextMonth); }} />
       <View style={styles.tabs}><TouchableOpacity style={[styles.tab, activeTab === 'expenses' && styles.tabActive]} onPress={() => setActiveTab('expenses')}><Text style={styles.tabText}>Wydatki</Text></TouchableOpacity><TouchableOpacity style={[styles.tab, activeTab === 'transfers' && styles.tabActive]} onPress={() => setActiveTab('transfers')}><Text style={styles.tabText}>Przelewy</Text></TouchableOpacity></View>
       {activeTab === 'transfers' ? renderTransfers() : <FlatList data={expenses} keyExtractor={(item) => item.id.toString()} renderItem={({ item }) => <ExpenseItem expense={item} payerName={getPayerName(item.payer_id)} currentUserId={currentUser.id} onPress={() => setSelectedExpense(item)} onDelete={() => handleDeleteExpense(item.id)} />} ListHeaderComponent={renderExpenseHeader} ListEmptyComponent={<Text style={styles.emptyText}>Brak wydatków w tym miesiącu</Text>} contentContainerStyle={styles.listContent} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled" />}
       <Modal visible={selectedExpense !== null} transparent animationType="fade" onRequestClose={() => setSelectedExpense(null)}>

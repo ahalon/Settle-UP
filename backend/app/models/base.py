@@ -75,3 +75,16 @@ class Transfer(Base):
     amount = Column(Integer, nullable=False)
     status = Column(String(20), nullable=False, default="pending")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
+    year = Column(Integer, nullable=False)
+    month = Column(Integer, nullable=False)
+    message = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    read_at = Column(DateTime, nullable=True)

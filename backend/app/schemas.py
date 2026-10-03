@@ -120,3 +120,32 @@ class BalanceOut(BaseModel):
     summary: str
     my_net_balance: Optional[int] = None
     all_balances: dict[int, int] = {}
+
+
+class NotificationOut(BaseModel):
+    id: int
+    user_id: int
+    group_id: int
+    year: int
+    month: int
+    message: str
+    created_at: datetime
+    read_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MonthlyMemberBreakdown(BaseModel):
+    name: str
+    amount: int
+
+
+class MonthlySummaryOut(BaseModel):
+    year: int
+    month: int
+    total_group_spent: int
+    total_group_spent_pln: str
+    my_spent: int
+    my_spent_pln: str
+    expense_count: int
+    members_breakdown: List[MonthlyMemberBreakdown]

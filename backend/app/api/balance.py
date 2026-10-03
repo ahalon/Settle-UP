@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import extract
 from sqlalchemy.orm import Session
@@ -5,12 +7,16 @@ from sqlalchemy.orm import Session
 from app.api.auth import get_current_user
 from app.core.database import get_db
 from app.models.base import Expense, Group, Transfer, User
-from app.schemas import BalanceOut
+from app.schemas import BalanceOut, MonthlySummaryOut
 
 router = APIRouter()
 
 
-def calculate_group_balances(group: Group, db: Session) -> dict[int, int]:
+def calculate_group_balances(
+    group: Group,
+    db: Session,
+    as_of: datetime | None = None,
+) -> dict[int, int]:
     members = group.members
     num_members = len(members)
     net_balances = {member.id: 0 for member in members}
@@ -18,18 +24,23 @@ def calculate_group_balances(group: Group, db: Session) -> dict[int, int]:
     if num_members == 0:
         return net_balances
 
-    expenses = db.query(Expense).filter(Expense.group_id == group.id).all()
+    expense_query = db.query(Expense).filter(Expense.group_id == group.id)
+    if as_of is not None:
+        expense_query = expense_query.filter(Expense.created_at <= as_of)
+    expenses = expense_query.all()
     for expense in expenses:
         share = expense.amount // num_members
         for member in members:
             net_balances[member.id] -= share
         net_balances[expense.payer_id] += expense.amount
 
-    active_transfers = (
-        db.query(Transfer)
-        .filter(Transfer.group_id == group.id, Transfer.status != "rejected")
-        .all()
+    transfer_query = db.query(Transfer).filter(
+        Transfer.group_id == group.id,
+        Transfer.status != "rejected",
     )
+    if as_of is not None:
+        transfer_query = transfer_query.filter(Transfer.created_at <= as_of)
+    active_transfers = transfer_query.all()
     for transfer in active_transfers:
         net_balances[transfer.sender_id] += transfer.amount
         net_balances[transfer.receiver_id] -= transfer.amount
@@ -70,7 +81,7 @@ def get_group_balance(
     }
 
 
-@router.get("/groups/{group_id}/monthly-summary")
+@router.get("/groups/{group_id}/monthly-summary", response_model=MonthlySummaryOut)
 def get_group_monthly_summary(
     group_id: int,
     year: int = Query(..., ge=2020, le=2100, description="Rok podsumowania"),

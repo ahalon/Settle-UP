@@ -46,6 +46,17 @@ export interface MonthlySummaryResponse {
   members_breakdown: Array<{ name: string; amount: number }>;
 }
 
+export interface Notification {
+  id: number;
+  user_id: number;
+  group_id: number;
+  year: number;
+  month: number;
+  message: string;
+  created_at: string;
+  read_at?: string | null;
+}
+
 export type TransferStatus = 'pending' | 'confirmed' | 'rejected';
 
 export interface Transfer {
