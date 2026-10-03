@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import extract
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_user
@@ -66,4 +67,50 @@ def get_group_balance(
         "summary": summary,
         "my_net_balance": my_balance_cents,
         "all_balances": net_balances,
+    }
+
+
+@router.get("/groups/{group_id}/monthly-summary")
+def get_group_monthly_summary(
+    group_id: int,
+    year: int = Query(..., ge=2020, le=2100, description="Rok podsumowania"),
+    month: int = Query(..., ge=1, le=12, description="Miesiąc podsumowania (1-12)"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    group = db.query(Group).filter(Group.id == group_id).first()
+    if not group or current_user not in group.members:
+        raise HTTPException(status_code=403, detail="Brak dostępu do tej grupy.")
+
+    # Pobieramy wydatki tylko z wybranego miesiąca i roku
+    monthly_expenses = (
+        db.query(Expense)
+        .filter(
+            Expense.group_id == group_id,
+            extract("year", Expense.created_at) == year,
+            extract("month", Expense.created_at) == month,
+        )
+        .all()
+    )
+
+    total_group_spent = sum(e.amount for e in monthly_expenses)
+
+    # Inicjalizacja wydatków per user na 0 dla każdego członka grupy
+    spending_by_user = {member.id: {"name": member.name, "amount": 0} for member in group.members}
+
+    for exp in monthly_expenses:
+        if exp.payer_id in spending_by_user:
+            spending_by_user[exp.payer_id]["amount"] += exp.amount
+
+    my_spent = spending_by_user.get(current_user.id, {}).get("amount", 0)
+
+    return {
+        "year": year,
+        "month": month,
+        "total_group_spent": total_group_spent,
+        "total_group_spent_pln": f"{total_group_spent / 100:.2f} PLN",
+        "my_spent": my_spent,
+        "my_spent_pln": f"{my_spent / 100:.2f} PLN",
+        "expense_count": len(monthly_expenses),
+        "members_breakdown": list(spending_by_user.values()),
     }

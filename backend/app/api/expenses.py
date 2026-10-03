@@ -1,6 +1,7 @@
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import extract
 from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_user
@@ -41,6 +42,8 @@ def add_expense(
 @router.get("/groups/{group_id}/expenses", response_model=List[ExpenseOut])
 def get_group_expenses(
     group_id: int,
+    year: Optional[int] = Query(None, ge=2020, le=2100, description="Filtruj po roku"),
+    month: Optional[int] = Query(None, ge=1, le=12, description="Filtruj po miesiącu (1-12)"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -48,14 +51,23 @@ def get_group_expenses(
     if not group or current_user not in group.members:
         raise HTTPException(status_code=403, detail="Brak dostępu do wydatków tej grupy.")
 
-    return db.query(Expense).filter(Expense.group_id == group_id).order_by(Expense.created_at.desc()).all()
+    query = db.query(Expense).filter(Expense.group_id == group_id)
+
+    # Filtrowanie miesięczne, gdy oba parametry zostaną przekazane
+    if year is not None and month is not None:
+        query = query.filter(
+            extract("year", Expense.created_at) == year,
+            extract("month", Expense.created_at) == month,
+        )
+
+    return query.order_by(Expense.created_at.desc()).all()
 
 
 @router.delete("/expenses/{expense_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_expense(
     expense_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
     expense = db.query(Expense).filter(Expense.id == expense_id).first()
     if not expense:
@@ -64,7 +76,7 @@ def delete_expense(
     if expense.payer_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Możesz usuwać tylko własne wydatki"
+            detail="Możesz usuwać tylko własne wydatki",
         )
 
     db.delete(expense)

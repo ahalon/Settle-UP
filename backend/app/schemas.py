@@ -119,4 +119,4 @@ class TransferOut(BaseModel):
 class BalanceOut(BaseModel):
     summary: str
     my_net_balance: Optional[int] = None
-    all_balances: dict[str, int] = {}
+    all_balances: dict[int, int] = {}
