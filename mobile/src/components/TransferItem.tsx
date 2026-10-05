@@ -1,5 +1,6 @@
 import React from 'react';
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 
 import { Transfer } from '../types';
 
@@ -7,15 +8,30 @@ interface TransferItemProps {
   transfer: Transfer;
   senderName: string;
   receiverName: string;
+  receiverPhone?: string | null;
   currentUserId?: number;
   onDecision: (decision: 'confirm' | 'reject') => void;
   onDelete: () => void;
 }
 
-export default function TransferItem({ transfer, senderName, receiverName, currentUserId, onDecision, onDelete }: TransferItemProps) {
+export default function TransferItem({
+  transfer,
+  senderName,
+  receiverName,
+  receiverPhone,
+  currentUserId,
+  onDecision,
+  onDelete,
+}: TransferItemProps) {
   const isSender = transfer.sender_id === currentUserId;
   const isReceiver = transfer.receiver_id === currentUserId;
   const pending = transfer.status === 'pending';
+
+  const handleCopyPhone = async () => {
+    if (!receiverPhone) return;
+    await Clipboard.setStringAsync(receiverPhone);
+    Alert.alert('Skopiowano', `Numer ${receiverPhone} został skopiowany do schowka.`);
+  };
 
   return (
     <View style={pending ? styles.pending : styles.confirmed}>
@@ -26,18 +42,31 @@ export default function TransferItem({ transfer, senderName, receiverName, curre
         {isSender && pending && (
           <TouchableOpacity
             style={styles.deleteButton}
-            onPress={() => Alert.alert('Usuń deklarację', 'Czy na pewno chcesz usunąć tę deklarację przelewu?', [
-              { text: 'Anuluj', style: 'cancel' },
-              { text: 'Usuń', style: 'destructive', onPress: onDelete },
-            ])}
+            onPress={() =>
+              Alert.alert('Usuń deklarację', 'Czy na pewno chcesz usunąć tę deklarację przelewu?', [
+                { text: 'Anuluj', style: 'cancel' },
+                { text: 'Usuń', style: 'destructive', onPress: onDelete },
+              ])
+            }
           >
             <Text style={styles.deleteText}>✕</Text>
           </TouchableOpacity>
         )}
       </View>
-      <Text style={styles.people}>{senderName} → {receiverName}</Text>
+
+      <Text style={styles.people}>
+        {senderName} → {receiverName}
+      </Text>
+
+      {isSender && receiverPhone && (
+        <TouchableOpacity style={styles.phoneBadge} onPress={handleCopyPhone}>
+          <Text style={styles.phoneText}>BLIK: {receiverPhone} (kliknij, by skopiować)</Text>
+        </TouchableOpacity>
+      )}
+
       <Text style={styles.amount}>{(transfer.amount / 100).toFixed(2)} PLN</Text>
       <Text style={styles.date}>{new Date(transfer.created_at).toLocaleString('pl-PL')}</Text>
+
       {isReceiver && pending && (
         <View style={styles.actions}>
           <TouchableOpacity style={styles.confirm} onPress={() => onDecision('confirm')}>
@@ -61,6 +90,8 @@ const styles = StyleSheet.create({
   deleteButton: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#7f1d1d', alignItems: 'center', justifyContent: 'center' },
   deleteText: { color: '#fecaca', fontSize: 14, fontWeight: '800' },
   people: { color: '#f8fafc', fontSize: 15, fontWeight: '700', marginTop: 6 },
+  phoneBadge: { backgroundColor: '#0f172a', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 4, marginTop: 4, alignSelf: 'flex-start' },
+  phoneText: { color: '#38bdf8', fontSize: 12, fontWeight: '600' },
   amount: { color: '#f8fafc', fontSize: 17, fontWeight: '800', marginTop: 4 },
   date: { color: '#94a3b8', fontSize: 11, marginTop: 4 },
   actions: { flexDirection: 'row', gap: 8, marginTop: 8 },

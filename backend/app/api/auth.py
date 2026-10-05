@@ -43,6 +43,7 @@ def register(payload: RegisterPayload, db: Session = Depends(get_db)):
     user = User(
         name=payload.name,
         email=payload.email,
+        phone_number=payload.phone_number.strip() if payload.phone_number else None,
         hashed_password=get_password_hash(payload.password),
     )
     db.add(user)
@@ -50,7 +51,13 @@ def register(payload: RegisterPayload, db: Session = Depends(get_db)):
     db.refresh(user)
 
     token = create_access_token({"sub": str(user.id)})
-    return {"access_token": token, "token_type": "bearer", "user_id": user.id, "name": user.name}
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user_id": user.id,
+        "name": user.name,
+        "phone_number": user.phone_number,
+    }
 
 
 @router.post("/auth/login", response_model=TokenResponse)
@@ -60,4 +67,10 @@ def login(payload: LoginPayload, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Błędny email lub hasło.")
 
     token = create_access_token({"sub": str(user.id)})
-    return {"access_token": token, "token_type": "bearer", "user_id": user.id, "name": user.name}
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user_id": user.id,
+        "name": user.name,
+        "phone_number": user.phone_number,
+    }

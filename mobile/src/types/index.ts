@@ -2,17 +2,20 @@ export interface User {
   id: number;
   name: string;
   email: string;
+  phone_number?: string | null;
 }
 
 export interface CurrentUser {
   id: number;
   name: string;
+  phone_number?: string | null;
 }
 
 export interface Group {
   id: number;
   name: string;
   join_code: string;
+  created_at?: string;
   members: User[];
   balanceSummary?: string;
   balanceCents?: number;
@@ -73,6 +76,7 @@ export interface RegisterPayload {
   name: string;
   email: string;
   password: string;
+  phone_number?: string | null;
 }
 
 export interface LoginPayload {
@@ -85,6 +89,7 @@ export interface TokenResponse {
   token_type: string;
   user_id: number;
   name: string;
+  phone_number?: string | null;
 }
 
 export interface CreateGroupPayload {

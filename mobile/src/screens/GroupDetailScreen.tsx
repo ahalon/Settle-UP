@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, FlatList, Image, Modal, ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Clipboard from 'expo-clipboard';
 
 import { addExpense, declareTransfer, deleteExpense, deleteTransfer, decideTransfer, getGroupBalance, getGroupExpenses, getGroupTransfers, getMonthlySummary } from '../services/api';
 import { BalanceResponse, CurrentUser, Expense, Group, LobbyTab, MonthlySummaryResponse, Transfer } from '../types';
@@ -42,9 +43,11 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
   const [receiptImage, setReceiptImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  const getMemberById = (id: number) => group.members.find((member) => member.id === id);
+
   const getPayerName = (payerId: number) => {
     if (payerId === currentUser.id) return 'Ty';
-    return group.members.find((member) => member.id === payerId)?.name || `ID: ${payerId}`;
+    return getMemberById(payerId)?.name || `ID: ${payerId}`;
   };
 
   const loadDetails = async () => {
@@ -67,6 +70,16 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
   };
 
   useEffect(() => { loadDetails(); }, [group.id, token, year, month]);
+
+  const handleCopyCode = async () => {
+    await Clipboard.setStringAsync(group.join_code);
+    Alert.alert('Skopiowano', `Kod "${group.join_code}" został skopiowany do schowka.`);
+  };
+
+  const handleCopyBLIK = async (phone: string) => {
+    await Clipboard.setStringAsync(phone);
+    Alert.alert('Skopiowano', `Numer BLIK: ${phone} w schowku.`);
+  };
 
   const handleAddExpense = async () => {
     if (!title.trim() || !amount.trim() || !selectedPayerId) {
@@ -152,34 +165,170 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
     </>
   );
 
+  const selectedRecipientUser = transferRecipientId ? getMemberById(transferRecipientId) : null;
+
   const renderTransfers = () => (
     <ScrollView style={styles.tabScroll} contentContainerStyle={styles.tabContent} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
       {balance?.my_net_balance !== undefined && balance.my_net_balance < 0 && <View style={styles.transferCard}>
         <Text style={styles.transferTitle}>Oddaj pieniądze</Text><Text style={styles.transferHint}>Do spłaty: {(Math.abs(balance.my_net_balance) / 100).toFixed(2)} PLN</Text>
         <Text style={styles.subLabel}>Odbiorca przelewu</Text>
         <View style={styles.transferRecipients}>{group.members.filter((member) => member.id !== currentUser.id && (balance.all_balances?.[String(member.id)] || 0) > 0).map((member) => <TouchableOpacity key={member.id} style={[styles.transferRecipient, transferRecipientId === member.id && styles.transferRecipientActive]} onPress={() => setTransferRecipientId(member.id)}><Text style={styles.transferRecipientText}>{member.name}</Text></TouchableOpacity>)}</View>
+
+        {selectedRecipientUser?.phone_number && (
+          <TouchableOpacity style={styles.blikBadge} onPress={() => handleCopyBLIK(selectedRecipientUser.phone_number!)}>
+            <Text style={styles.blikBadgeText}>BLIK do {selectedRecipientUser.name}: {selectedRecipientUser.phone_number} (kliknij)</Text>
+          </TouchableOpacity>
+        )}
+
         <TextInput style={styles.input} placeholder="Kwota przelewu (PLN)" placeholderTextColor="#64748b" keyboardType="numeric" value={transferAmount} onChangeText={setTransferAmount} />
         <TouchableOpacity style={styles.transferButton} onPress={handleDeclareTransfer} disabled={loading}><Text style={styles.actionBtnText}>Zadeklaruj przelew</Text></TouchableOpacity>
       </View>}
       <Text style={styles.transferSectionTitle}>Oczekujące</Text>
-      {transfers.filter((transfer) => transfer.status === 'pending').map((transfer) => <TransferItem key={transfer.id} transfer={transfer} senderName={getPayerName(transfer.sender_id)} receiverName={getPayerName(transfer.receiver_id)} currentUserId={currentUser.id} onDecision={(decision) => handleDecision(transfer.id, decision)} onDelete={() => handleDeleteTransfer(transfer.id)} />)}
+      {transfers.filter((transfer) => transfer.status === 'pending').map((transfer) => {
+        const receiver = getMemberById(transfer.receiver_id);
+        return (
+          <TransferItem
+            key={transfer.id}
+            transfer={transfer}
+            senderName={getPayerName(transfer.sender_id)}
+            receiverName={getPayerName(transfer.receiver_id)}
+            receiverPhone={receiver?.phone_number}
+            currentUserId={currentUser.id}
+            onDecision={(decision) => handleDecision(transfer.id, decision)}
+            onDelete={() => handleDeleteTransfer(transfer.id)}
+          />
+        );
+      })}
       <Text style={styles.transferSectionTitle}>Potwierdzone</Text>
-      {transfers.filter((transfer) => transfer.status === 'confirmed').map((transfer) => <TransferItem key={transfer.id} transfer={transfer} senderName={getPayerName(transfer.sender_id)} receiverName={getPayerName(transfer.receiver_id)} currentUserId={currentUser.id} onDecision={(decision) => handleDecision(transfer.id, decision)} onDelete={() => handleDeleteTransfer(transfer.id)} />)}
+      {transfers.filter((transfer) => transfer.status === 'confirmed').map((transfer) => {
+        const receiver = getMemberById(transfer.receiver_id);
+        return (
+          <TransferItem
+            key={transfer.id}
+            transfer={transfer}
+            senderName={getPayerName(transfer.sender_id)}
+            receiverName={getPayerName(transfer.receiver_id)}
+            receiverPhone={receiver?.phone_number}
+            currentUserId={currentUser.id}
+            onDecision={(decision) => handleDecision(transfer.id, decision)}
+            onDelete={() => handleDeleteTransfer(transfer.id)}
+          />
+        );
+      })}
       {!transfers.some((transfer) => transfer.status === 'pending' || transfer.status === 'confirmed') && <Text style={styles.emptyText}>Brak przelewów</Text>}
     </ScrollView>
   );
 
+  const netBalance = balance?.my_net_balance ?? 0;
+  const isPositive = netBalance > 0;
+  const isNegative = netBalance < 0;
+
+  const balanceStyle = isPositive
+    ? styles.balanceValuePositive
+    : isNegative
+    ? styles.balanceValueNegative
+    : styles.balanceValueZero;
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />
-      <View style={styles.navBar}><TouchableOpacity onPress={onBack} style={styles.backBtn}><Text style={styles.backText}>← Wróć</Text></TouchableOpacity><Text style={styles.groupName}>{group.name}</Text></View>
-      <View style={styles.codeCard}><Text style={styles.codeLabel}>KOD DOŁĄCZENIA DO TEGO LOBBY:</Text><Text style={styles.codeValue}>{group.join_code}</Text></View>
-      <View style={styles.balanceCard}><Text style={styles.balanceLabel}>Twój bilans w tej grupie:</Text><Text style={styles.balanceValue}>{balance?.summary || 'Ładowanie...'}</Text></View>
-      <MonthlySummaryCard year={year} month={month} summary={monthlySummary} onSelectMonth={(nextYear, nextMonth) => { setYear(nextYear); setMonth(nextMonth); }} />
-      <View style={styles.tabs}><TouchableOpacity style={[styles.tab, activeTab === 'expenses' && styles.tabActive]} onPress={() => setActiveTab('expenses')}><Text style={styles.tabText}>Wydatki</Text></TouchableOpacity><TouchableOpacity style={[styles.tab, activeTab === 'transfers' && styles.tabActive]} onPress={() => setActiveTab('transfers')}><Text style={styles.tabText}>Przelewy</Text></TouchableOpacity></View>
-      {activeTab === 'transfers' ? renderTransfers() : <FlatList data={expenses} keyExtractor={(item) => item.id.toString()} renderItem={({ item }) => <ExpenseItem expense={item} payerName={getPayerName(item.payer_id)} currentUserId={currentUser.id} onPress={() => setSelectedExpense(item)} onDelete={() => handleDeleteExpense(item.id)} />} ListHeaderComponent={renderExpenseHeader} ListEmptyComponent={<Text style={styles.emptyText}>Brak wydatków w tym miesiącu</Text>} contentContainerStyle={styles.listContent} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled" />}
+      <View style={styles.navBar}>
+        <TouchableOpacity onPress={onBack} style={styles.backBtn}>
+          <Text style={styles.backText}>← Wróć</Text>
+        </TouchableOpacity>
+        <Text style={styles.groupName} numberOfLines={1}>{group.name}</Text>
+      </View>
+
+      <TouchableOpacity 
+        style={styles.codeRow} 
+        onPress={handleCopyCode} 
+        activeOpacity={0.7}
+      >
+        <Text style={styles.codeLabel}>KOD DOŁĄCZENIA (KLIKNIJ):</Text>
+        <View style={styles.codeBadge}>
+          <Text style={styles.codeValue}>{group.join_code}</Text>
+        </View>
+      </TouchableOpacity>
+
+      <View style={[styles.balanceCard, isPositive && styles.cardPositive, isNegative && styles.cardNegative]}>
+        <Text style={styles.balanceLabel}>TWÓJ BILANS W TEJ GRUPIE</Text>
+        <Text style={[styles.balanceValue, balanceStyle]}>
+          {balance?.summary || 'Ładowanie...'}
+        </Text>
+      </View>
+
+      <MonthlySummaryCard
+        year={year}
+        month={month}
+        summary={monthlySummary}
+        onSelectMonth={(nextYear: number, nextMonth: number) => {
+          setYear(nextYear);
+          setMonth(nextMonth);
+        }}
+        groupCreatedAt={group.created_at}
+      />
+
+      <View style={styles.tabs}>
+        <TouchableOpacity style={[styles.tab, activeTab === 'expenses' && styles.tabActive]} onPress={() => setActiveTab('expenses')}>
+          <Text style={styles.tabText}>Wydatki</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.tab, activeTab === 'transfers' && styles.tabActive]} onPress={() => setActiveTab('transfers')}>
+          <Text style={styles.tabText}>Przelewy</Text>
+        </TouchableOpacity>
+      </View>
+
+      {activeTab === 'transfers' ? (
+        renderTransfers()
+      ) : (
+        <FlatList
+          data={expenses}
+          keyExtractor={(item) => item.id.toString()}
+          renderItem={({ item }) => (
+            <ExpenseItem
+              expense={item}
+              payerName={getPayerName(item.payer_id)}
+              currentUserId={currentUser.id}
+              onPress={() => setSelectedExpense(item)}
+              onDelete={() => handleDeleteExpense(item.id)}
+            />
+          )}
+          ListHeaderComponent={renderExpenseHeader}
+          ListEmptyComponent={<Text style={styles.emptyText}>Brak wydatków w tym miesiącu</Text>}
+          contentContainerStyle={styles.listContent}
+          keyboardDismissMode="on-drag"
+          keyboardShouldPersistTaps="handled"
+        />
+      )}
+
       <Modal visible={selectedExpense !== null} transparent animationType="fade" onRequestClose={() => setSelectedExpense(null)}>
-        <View style={styles.modalOverlay}>{selectedExpense && <View style={styles.detailsCard}><View style={styles.detailsHeader}><Text style={styles.detailsTitle}>Szczegóły wydatku</Text><TouchableOpacity style={styles.closeButton} onPress={() => setSelectedExpense(null)}><Text style={styles.closeText}>✕</Text></TouchableOpacity></View><ScrollView keyboardDismissMode="on-drag"><Text style={styles.detailsExpenseTitle}>{selectedExpense.title}</Text><Text style={styles.detailsAmount}>{(selectedExpense.amount / 100).toFixed(2)} PLN</Text><Text style={styles.detailsLabel}>Płatnik</Text><Text style={styles.detailsValue}>{getPayerName(selectedExpense.payer_id)}</Text><Text style={styles.detailsLabel}>Data</Text><Text style={styles.detailsValue}>{new Date(selectedExpense.created_at).toLocaleString('pl-PL')}</Text><Text style={styles.detailsLabel}>Opis</Text><Text style={styles.detailsValue}>{selectedExpense.description || 'Brak opisu'}</Text>{selectedExpense.receipt_image && <><Text style={styles.detailsLabel}>Paragon</Text><Image source={{ uri: selectedExpense.receipt_image }} style={styles.detailsImage} /></>}</ScrollView></View>}</View>
+        <View style={styles.modalOverlay}>
+          {selectedExpense && (
+            <View style={styles.detailsCard}>
+              <View style={styles.detailsHeader}>
+                <Text style={styles.detailsTitle}>Szczegóły wydatku</Text>
+                <TouchableOpacity style={styles.closeButton} onPress={() => setSelectedExpense(null)}>
+                  <Text style={styles.closeText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView keyboardDismissMode="on-drag">
+                <Text style={styles.detailsExpenseTitle}>{selectedExpense.title}</Text>
+                <Text style={styles.detailsAmount}>{(selectedExpense.amount / 100).toFixed(2)} PLN</Text>
+                <Text style={styles.detailsLabel}>Płatnik</Text>
+                <Text style={styles.detailsValue}>{getPayerName(selectedExpense.payer_id)}</Text>
+                <Text style={styles.detailsLabel}>Data</Text>
+                <Text style={styles.detailsValue}>{new Date(selectedExpense.created_at).toLocaleString('pl-PL')}</Text>
+                <Text style={styles.detailsLabel}>Opis</Text>
+                <Text style={styles.detailsValue}>{selectedExpense.description || 'Brak opisu'}</Text>
+                {selectedExpense.receipt_image && (
+                  <>
+                    <Text style={styles.detailsLabel}>Paragon</Text>
+                    <Image source={{ uri: selectedExpense.receipt_image }} style={styles.detailsImage} />
+                  </>
+                )}
+              </ScrollView>
+            </View>
+          )}
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -187,16 +336,44 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0f172a', paddingHorizontal: 16 },
-  navBar: { flexDirection: 'row', alignItems: 'center', marginTop: 8, marginBottom: 12, gap: 12 },
+  navBar: { flexDirection: 'row', alignItems: 'center', marginTop: 8, marginBottom: 10, gap: 12 },
   backBtn: { paddingVertical: 6, paddingHorizontal: 10, backgroundColor: '#334155', borderRadius: 6 },
   backText: { color: '#38bdf8', fontSize: 13, fontWeight: '600' },
   groupName: { color: '#f8fafc', fontSize: 18, fontWeight: '700', flex: 1 },
-  codeCard: { backgroundColor: '#1e293b', padding: 10, borderRadius: 8, marginBottom: 8, borderWidth: 1, borderColor: '#38bdf8', alignItems: 'center' },
-  codeLabel: { color: '#94a3b8', fontSize: 10, fontWeight: '700', letterSpacing: 1 },
-  codeValue: { color: '#38bdf8', fontSize: 20, fontWeight: '800', letterSpacing: 2, marginTop: 2 },
-  balanceCard: { backgroundColor: '#1e293b', padding: 12, borderRadius: 8, marginBottom: 10 },
-  balanceLabel: { color: '#94a3b8', fontSize: 12 },
-  balanceValue: { color: '#38bdf8', fontSize: 15, fontWeight: '700', marginTop: 2 },
+
+  codeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1e293b',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  codeLabel: { color: '#94a3b8', fontSize: 11, fontWeight: '700', letterSpacing: 0.8 },
+  codeBadge: { backgroundColor: '#0f172a', paddingHorizontal: 10, paddingVertical: 3, borderRadius: 6, borderWidth: 1, borderColor: '#38bdf8' },
+  codeValue: { color: '#38bdf8', fontSize: 13, fontWeight: '800', letterSpacing: 1.5 },
+
+  balanceCard: {
+    backgroundColor: '#1e293b',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    marginBottom: 10,
+    borderWidth: 1.5,
+    borderColor: '#334155',
+  },
+  cardPositive: { borderColor: '#16a34a' },
+  cardNegative: { borderColor: '#dc2626' },
+  balanceLabel: { color: '#94a3b8', fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' },
+  balanceValue: { fontSize: 20, fontWeight: '800', marginTop: 4 },
+  balanceValuePositive: { color: '#4ade80' },
+  balanceValueNegative: { color: '#f87171' },
+  balanceValueZero: { color: '#94a3b8' },
+
   tabs: { flexDirection: 'row', backgroundColor: '#1e293b', borderRadius: 8, padding: 4, marginBottom: 10 },
   tab: { flex: 1, alignItems: 'center', paddingVertical: 9, borderRadius: 6 },
   tabActive: { backgroundColor: '#2563eb' },
@@ -228,6 +405,8 @@ const styles = StyleSheet.create({
   transferRecipient: { backgroundColor: '#334155', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 6 },
   transferRecipientActive: { backgroundColor: '#2563eb' },
   transferRecipientText: { color: '#f8fafc', fontSize: 13, fontWeight: '700' },
+  blikBadge: { backgroundColor: '#0284c7', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, marginBottom: 10, alignItems: 'center' },
+  blikBadgeText: { color: '#ffffff', fontSize: 13, fontWeight: '700' },
   transferButton: { backgroundColor: '#2563eb', paddingVertical: 10, borderRadius: 6, alignItems: 'center' },
   transferSectionTitle: { color: '#f8fafc', fontSize: 16, fontWeight: '800', marginTop: 8, marginBottom: 8 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.8)', justifyContent: 'center', padding: 20 },

@@ -10,17 +10,18 @@ import {
   JoinGroupPayload,
   MonthlySummaryResponse,
   Notification,
+  RegisterPayload,
   TokenResponse,
   Transfer,
 } from '../types';
 
-export const API_URL = 'http://192.168.1.69:8000';
+export const API_URL = 'http://192.168.0.199:8000';
 
 const authHeaders = (token: string) => ({
   Authorization: `Bearer ${token}`,
 });
 
-export const register = (payload: { name: string; email: string; password: string }) =>
+export const register = (payload: RegisterPayload) =>
   axios.post<TokenResponse>(`${API_URL}/api/auth/register`, payload);
 
 export const login = (payload: { email: string; password: string }) =>

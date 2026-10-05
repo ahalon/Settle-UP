@@ -14,12 +14,15 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
   const [isLoginMode, setIsLoginMode] = useState(true);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async () => {
     const trimmedName = name.trim();
     const trimmedEmail = email.trim();
+    const trimmedPhone = phone.trim();
+
     if (!trimmedEmail || !password || (!isLoginMode && !trimmedName)) {
       Alert.alert('Błąd', 'Uzupełnij wszystkie wymagane pola');
       return;
@@ -29,9 +32,20 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
     try {
       const response = isLoginMode
         ? await login({ email: trimmedEmail, password })
-        : await register({ name: trimmedName, email: trimmedEmail, password });
-      const { access_token, user_id, name: userName } = response.data;
-      const user = { id: user_id, name: userName };
+        : await register({
+            name: trimmedName,
+            email: trimmedEmail,
+            password,
+            phone_number: trimmedPhone || null,
+          });
+
+      const { access_token, user_id, name: userName, phone_number } = response.data;
+      const user: CurrentUser = {
+        id: user_id,
+        name: userName,
+        phone_number: phone_number ?? (trimmedPhone || null),
+      };
+
       await saveToken(access_token);
       await saveUserData(user);
       onLoginSuccess(user);
@@ -47,14 +61,54 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
       <Text style={styles.title}>SettleUp</Text>
       <Text style={styles.subtitle}>{isLoginMode ? 'Zaloguj się do swojego konta' : 'Załóż nowe konto'}</Text>
       <View style={styles.card}>
-        {!isLoginMode && <TextInput style={styles.input} placeholder="Twoje imię" placeholderTextColor="#64748b" value={name} onChangeText={setName} autoCapitalize="words" />}
-        <TextInput style={styles.input} placeholder="Adres e-mail" placeholderTextColor="#64748b" keyboardType="email-address" autoCapitalize="none" value={email} onChangeText={setEmail} />
-        <TextInput style={styles.input} placeholder="Hasło" placeholderTextColor="#64748b" secureTextEntry value={password} onChangeText={setPassword} />
+        {!isLoginMode && (
+          <>
+            <TextInput
+              style={styles.input}
+              placeholder="Twoje imię"
+              placeholderTextColor="#64748b"
+              value={name}
+              onChangeText={setName}
+              autoCapitalize="words"
+            />
+            <TextInput
+              style={styles.input}
+              placeholder="Numer telefonu (do BLIKa)"
+              placeholderTextColor="#64748b"
+              keyboardType="phone-pad"
+              value={phone}
+              onChangeText={setPhone}
+            />
+          </>
+        )}
+        <TextInput
+          style={styles.input}
+          placeholder="Adres e-mail"
+          placeholderTextColor="#64748b"
+          keyboardType="email-address"
+          autoCapitalize="none"
+          value={email}
+          onChangeText={setEmail}
+        />
+        <TextInput
+          style={styles.input}
+          placeholder="Hasło"
+          placeholderTextColor="#64748b"
+          secureTextEntry
+          value={password}
+          onChangeText={setPassword}
+        />
         <TouchableOpacity style={styles.mainButton} onPress={handleSubmit} disabled={loading}>
-          {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.mainButtonText}>{isLoginMode ? 'Zaloguj się' : 'Zarejestruj'}</Text>}
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.mainButtonText}>{isLoginMode ? 'Zaloguj się' : 'Zarejestruj'}</Text>
+          )}
         </TouchableOpacity>
         <TouchableOpacity style={styles.switchButton} onPress={() => setIsLoginMode((value) => !value)}>
-          <Text style={styles.switchButtonText}>{isLoginMode ? 'Nie masz jeszcze konta? Zarejestruj się' : 'Masz już konto? Zaloguj się'}</Text>
+          <Text style={styles.switchButtonText}>
+            {isLoginMode ? 'Nie masz jeszcze konta? Zarejestruj się' : 'Masz już konto? Zaloguj się'}
+          </Text>
         </TouchableOpacity>
       </View>
     </View>

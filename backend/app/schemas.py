@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 class UserBase(BaseModel):
     name: str = Field(..., min_length=2, max_length=50, description="Imię lub nick użytkownika")
     email: EmailStr = Field(..., max_length=100, description="Poprawny adres e-mail")
+    phone_number: Optional[str] = Field(None, max_length=20, description="Numer telefonu np. do BLIKa")
 
 
 class UserCreate(UserBase):
@@ -27,6 +28,7 @@ class RegisterPayload(BaseModel):
     name: str
     email: EmailStr
     password: str
+    phone_number: Optional[str] = None
 
 
 class LoginPayload(BaseModel):
@@ -39,6 +41,7 @@ class TokenResponse(BaseModel):
     token_type: str
     user_id: int
     name: str
+    phone_number: Optional[str] = None
 
 
 class UserOut(UserBase):
