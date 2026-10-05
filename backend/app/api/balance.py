@@ -12,6 +12,60 @@ from app.schemas import BalanceOut, MonthlySummaryOut
 router = APIRouter()
 
 
+def simplify_debts(net_balances: dict[int, int], members: list[User]) -> list[dict]:
+    """
+    Zachłanny algorytm minimalizacji liczby transakcji (Splitwise style).
+    Paruje największych dłużników z największymi wierzycielami.
+    """
+    member_map = {m.id: m for m in members}
+
+    # dłużnicy (-) i wierzyciele (+)
+    debtors = []    # [user_id, kwota_do_oddania_dodatnia]
+    creditors = []  # [user_id, kwota_do_odebrania]
+
+    for user_id, bal in net_balances.items():
+        if bal < 0:
+            debtors.append([user_id, -bal])
+        elif bal > 0:
+            creditors.append([user_id, bal])
+
+    # Sortujemy malejąco po kwocie, żeby zminimalizować liczbę transferów
+    debtors.sort(key=lambda x: x[1], reverse=True)
+    creditors.sort(key=lambda x: x[1], reverse=True)
+
+    settlements = []
+    i = 0
+    j = 0
+
+    while i < len(debtors) and j < len(creditors):
+        debtor_id, debt_amt = debtors[i]
+        creditor_id, cred_amt = creditors[j]
+
+        settled = min(debt_amt, cred_amt)
+        if settled > 0:
+            debtor = member_map.get(debtor_id)
+            creditor = member_map.get(creditor_id)
+            settlements.append({
+                "from_user_id": debtor_id,
+                "from_user_name": debtor.name if debtor else f"User {debtor_id}",
+                "to_user_id": creditor_id,
+                "to_user_name": creditor.name if creditor else f"User {creditor_id}",
+                "to_user_phone": creditor.phone_number if creditor else None,
+                "amount_cents": settled,
+                "amount_pln": f"{settled / 100:.2f} PLN",
+            })
+
+        debtors[i][1] -= settled
+        creditors[j][1] -= settled
+
+        if debtors[i][1] == 0:
+            i += 1
+        if creditors[j][1] == 0:
+            j += 1
+
+    return settlements
+
+
 def calculate_group_balances(
     group: Group,
     db: Session,
@@ -60,9 +114,15 @@ def get_group_balance(
 
     members = group.members
     if len(members) < 2:
-        return {"summary": "Zaproś drugą osobę do lobby, aby widzieć rozliczenia.", "balances": {}}
+        return {
+            "summary": "Zaproś drugą osobę do lobby, aby widzieć rozliczenia.",
+            "my_net_balance": 0,
+            "all_balances": {},
+            "suggested_settlements": [],
+        }
 
     net_balances = calculate_group_balances(group, db)
+    suggested = simplify_debts(net_balances, members)
 
     my_balance_cents = net_balances.get(current_user.id, 0)
     my_balance_pln = my_balance_cents / 100
@@ -78,6 +138,7 @@ def get_group_balance(
         "summary": summary,
         "my_net_balance": my_balance_cents,
         "all_balances": net_balances,
+        "suggested_settlements": suggested,
     }
 
 
@@ -93,7 +154,6 @@ def get_group_monthly_summary(
     if not group or current_user not in group.members:
         raise HTTPException(status_code=403, detail="Brak dostępu do tej grupy.")
 
-    # Pobieramy wydatki tylko z wybranego miesiąca i roku
     monthly_expenses = (
         db.query(Expense)
         .filter(
@@ -106,7 +166,6 @@ def get_group_monthly_summary(
 
     total_group_spent = sum(e.amount for e in monthly_expenses)
 
-    # Inicjalizacja wydatków per user na 0 dla każdego członka grupy
     spending_by_user = {member.id: {"name": member.name, "amount": 0} for member in group.members}
 
     for exp in monthly_expenses:

@@ -32,10 +32,21 @@ export interface Expense {
   receipt_image?: string | null;
 }
 
+export interface SettlementSuggestion {
+  from_user_id: number;
+  from_user_name: string;
+  to_user_id: number;
+  to_user_name: string;
+  to_user_phone?: string | null;
+  amount_cents: number;
+  amount_pln: string;
+}
+
 export interface BalanceResponse {
   summary: string;
   my_net_balance?: number;
   all_balances?: Record<string, number>;
+  suggested_settlements?: SettlementSuggestion[];
 }
 
 export interface MonthlySummaryResponse {

@@ -10,7 +10,11 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 class UserBase(BaseModel):
     name: str = Field(..., min_length=2, max_length=50, description="Imię lub nick użytkownika")
     email: EmailStr = Field(..., max_length=100, description="Poprawny adres e-mail")
-    phone_number: Optional[str] = Field(None, max_length=20, description="Numer telefonu np. do BLIKa")
+    phone_number: Optional[str] = Field(
+        None,
+        pattern=r"^\d{9}$",
+        description="Numer telefonu – do BLIKa (dokładnie 9 cyfr)"
+    )
 
 
 class UserCreate(UserBase):
@@ -28,7 +32,11 @@ class RegisterPayload(BaseModel):
     name: str
     email: EmailStr
     password: str
-    phone_number: Optional[str] = None
+    phone_number: Optional[str] = Field(
+        None,
+        pattern=r"^\d{9}$",
+        description="Numer telefonu – do BLIKa (dokładnie 9 cyfr)"
+    )
 
 
 class LoginPayload(BaseModel):
@@ -119,10 +127,21 @@ class TransferOut(BaseModel):
 # --- BALANCE SCHEMAS ---
 # ==========================================
 
+class SettlementSuggestion(BaseModel):
+    from_user_id: int
+    from_user_name: str
+    to_user_id: int
+    to_user_name: str
+    to_user_phone: Optional[str] = None
+    amount_cents: int
+    amount_pln: str
+
+
 class BalanceOut(BaseModel):
     summary: str
     my_net_balance: Optional[int] = None
     all_balances: dict[int, int] = {}
+    suggested_settlements: List[SettlementSuggestion] = []
 
 
 class NotificationOut(BaseModel):
