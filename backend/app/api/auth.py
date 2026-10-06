@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
@@ -7,9 +8,16 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import create_access_token, get_password_hash, verify_password
+from app.core.security import (
+    create_access_token,
+    create_email_verification_token,
+    get_password_hash,
+    verify_email_token,
+    verify_password,
+)
 from app.models.base import User
 from app.schemas import LoginPayload, RegisterPayload, TokenResponse
+from app.services.email_service import send_verification_email
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
@@ -59,8 +67,38 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     return user
 
 
-@router.post("/auth/register", response_model=TokenResponse)
-def register(payload: RegisterPayload, db: Session = Depends(get_db)):
+def render_verification_html(title: str, message: str, is_success: bool = True) -> str:
+    color = "#38bdf8" if is_success else "#f87171"
+    icon = "✓" if is_success else "✕"
+    return f"""
+    <!DOCTYPE html>
+    <html lang="pl">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{title} - SettleUp</title>
+      </head>
+      <body style="margin: 0; background-color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh;">
+        <div style="background-color: #1e293b; padding: 40px; border-radius: 16px; border: 1px solid #334155; text-align: center; max-width: 420px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); margin: 20px;">
+          <div style="width: 64px; height: 64px; background-color: rgba(56, 189, 248, 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px auto; color: {color}; font-size: 32px; font-weight: bold;">
+            {icon}
+          </div>
+          <h1 style="color: #f8fafc; font-size: 24px; margin-bottom: 12px; font-weight: 700;">{title}</h1>
+          <p style="color: #94a3b8; font-size: 15px; line-height: 1.5; margin-bottom: 0;">
+            {message}
+          </p>
+        </div>
+      </body>
+    </html>
+    """
+
+
+@router.post("/auth/register")
+def register(
+    payload: RegisterPayload,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Użytkownik o takim emailu już istnieje.")
@@ -70,19 +108,64 @@ def register(payload: RegisterPayload, db: Session = Depends(get_db)):
         email=payload.email,
         phone_number=payload.phone_number.strip() if payload.phone_number else None,
         hashed_password=get_password_hash(payload.password),
+        is_verified=False,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
 
-    token = create_access_token({"sub": str(user.id)})
+    verification_token = create_email_verification_token(user.email)
+    background_tasks.add_task(send_verification_email, user.email, verification_token)
+
     return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user_id": user.id,
-        "name": user.name,
-        "phone_number": user.phone_number,
+        "message": "Konto utworzone. Sprawdź swoją skrzynkę e-mail, aby potwierdzić adres przed logowaniem."
     }
+
+
+@router.get("/auth/verify", response_class=HTMLResponse)
+def verify_email(token: str, db: Session = Depends(get_db)):
+    email = verify_email_token(token)
+    if not email:
+        return HTMLResponse(
+            status_code=400,
+            content=render_verification_html(
+                "Błąd weryfikacji",
+                "Link weryfikacyjny jest nieprawidłowy lub wygasł. Spróbuj zarejestrować się ponownie.",
+                is_success=False,
+            ),
+        )
+
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        return HTMLResponse(
+            status_code=404,
+            content=render_verification_html(
+                "Użytkownik nie istnieje",
+                "Nie znaleziono konta powiązanego z tym adresem e-mail.",
+                is_success=False,
+            ),
+        )
+
+    if user.is_verified:
+        return HTMLResponse(
+            status_code=200,
+            content=render_verification_html(
+                "Konto już aktywne",
+                "Twój adres e-mail został już wcześniej zweryfikowany. Możesz zalogować się w aplikacji.",
+                is_success=True,
+            ),
+        )
+
+    user.is_verified = True
+    db.commit()
+    return HTMLResponse(
+        status_code=200,
+        content=render_verification_html(
+            "Konto aktywowane!",
+            "Twój adres e-mail został pomyślnie zweryfikowany. Możesz teraz wrócić do aplikacji SettleUp i się zalogować.",
+            is_success=True,
+        ),
+    )
 
 
 @router.post("/auth/login", response_model=TokenResponse)
@@ -90,6 +173,12 @@ def login(payload: LoginPayload, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email).first()
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Błędny email lub hasło.")
+
+    if not user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Adres e-mail nie został zweryfikowany. Sprawdź pocztę i kliknij link aktywacyjny.",
+        )
 
     token = create_access_token({"sub": str(user.id)})
     return {
