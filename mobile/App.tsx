@@ -5,7 +5,9 @@ import { getToken, getUserData, removeToken } from './authStorage';
 import AuthScreen from './src/screens/AuthScreen';
 import GroupDetailScreen from './src/screens/GroupDetailScreen';
 import LobbyListScreen from './src/screens/LobbyListScreen';
+import { updatePushToken } from './src/services/api';
 import { CurrentUser, Group } from './src/types';
+import { registerForPushNotificationsAsync } from './src/utils/notifications';
 
 export default function App() {
   const [token, setToken] = useState<string | null>(null);
@@ -28,6 +30,24 @@ export default function App() {
     restoreSession();
   }, []);
 
+  // Rejestracja push tokena i wysyłka do bazy po zalogowaniu / odzyskaniu sesji
+  useEffect(() => {
+    if (!token) return;
+
+    const setupPushNotifications = async () => {
+      try {
+        const pushToken = await registerForPushNotificationsAsync();
+        if (pushToken) {
+          await updatePushToken(token, pushToken);
+        }
+      } catch (error) {
+        console.error('Błąd podczas konfigurowania powiadomień push:', error);
+      }
+    };
+
+    setupPushNotifications();
+  }, [token]);
+
   const handleLoginSuccess = async (user: CurrentUser) => {
     const storedToken = await getToken();
     setToken(storedToken);
@@ -42,7 +62,11 @@ export default function App() {
   };
 
   if (isInitializing) {
-    return <View style={styles.loading}><ActivityIndicator size="large" color="#38bdf8" /></View>;
+    return (
+      <View style={styles.loading}>
+        <ActivityIndicator size="large" color="#38bdf8" />
+      </View>
+    );
   }
 
   if (!token || !currentUser) {
@@ -50,10 +74,24 @@ export default function App() {
   }
 
   if (activeGroup) {
-    return <GroupDetailScreen token={token} currentUser={currentUser} group={activeGroup} onBack={() => setActiveGroup(null)} />;
+    return (
+      <GroupDetailScreen
+        token={token}
+        currentUser={currentUser}
+        group={activeGroup}
+        onBack={() => setActiveGroup(null)}
+      />
+    );
   }
 
-  return <LobbyListScreen token={token} currentUser={currentUser} onSelectGroup={setActiveGroup} onLogout={handleLogout} />;
+  return (
+    <LobbyListScreen
+      token={token}
+      currentUser={currentUser}
+      onSelectGroup={setActiveGroup}
+      onLogout={handleLogout}
+    />
+  );
 }
 
 const styles = StyleSheet.create({

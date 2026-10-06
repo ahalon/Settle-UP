@@ -79,3 +79,11 @@ export const decideTransfer = (token: string, transferId: number, decision: 'con
 
 export const deleteTransfer = (token: string, transferId: number) =>
   axios.delete(`${API_URL}/api/transfers/${transferId}`, { headers: authHeaders(token) });
+
+export const updatePushToken = (token: string, pushToken: string) => {
+  return axios.post(
+    '/auth/push-token',
+    { token: pushToken },
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+};

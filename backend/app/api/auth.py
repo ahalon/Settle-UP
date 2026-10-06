@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
+from pydantic import BaseModel, Field
+import requests
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -11,6 +13,29 @@ from app.schemas import LoginPayload, RegisterPayload, TokenResponse
 
 router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+
+class PushTokenPayload(BaseModel):
+    token: str = Field(..., min_length=10, description="Expo push token użytkownika")
+
+
+def send_expo_push(token: str, title: str, body: str, data: dict | None = None) -> None:
+    """Wysyła powiadomienie push przez publiczne API Expo."""
+    if not token or not token.startswith("ExponentPushToken"):
+        return
+
+    url = "https://exp.host/--/api/v2/push/send"
+    payload = {
+        "to": token,
+        "title": title,
+        "body": body,
+        "sound": "default",
+        "data": data or {},
+    }
+    try:
+        requests.post(url, json=payload, timeout=5)
+    except Exception as e:
+        print(f"Błąd wysyłki powiadomienia push: {e}")
 
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
@@ -74,3 +99,14 @@ def login(payload: LoginPayload, db: Session = Depends(get_db)):
         "name": user.name,
         "phone_number": user.phone_number,
     }
+
+
+@router.post("/auth/push-token")
+def update_push_token(
+    payload: PushTokenPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    current_user.expo_push_token = payload.token.strip()
+    db.commit()
+    return {"status": "ok", "message": "Token powiadomień zaktualizowany."}

@@ -2,18 +2,12 @@ import React, { useEffect, useState } from 'react';
 import {
   Alert,
   FlatList,
-  Image,
   Keyboard,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
-  TouchableWithoutFeedback,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -41,9 +35,11 @@ import {
   Transfer,
 } from '../types';
 import { getErrorMessage } from '../utils/errorHandler';
+import AddExpenseModal from '../components/AddExpenseModal';
+import DeclareTransferModal from '../components/DeclareTransferModal';
+import ExpenseDetailsModal from '../components/ExpenseDetailsModal';
 import ExpenseItem from '../components/ExpenseItem';
 import MonthlySummaryCard from '../components/MonthlySummaryCard';
-import ReceiptPicker from '../components/ReceiptPicker';
 import TransferItem from '../components/TransferItem';
 
 interface GroupDetailScreenProps {
@@ -67,18 +63,13 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
   const [year, setYear] = useState(initialMonth.year);
   const [month, setMonth] = useState(initialMonth.month);
   const [activeTab, setActiveTab] = useState<LobbyTab>('expenses');
+
+  // Modale
+  const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
+  const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
   const [selectedExpense, setSelectedExpense] = useState<Expense | null>(null);
 
-  // Modal formularza wydatku
-  const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
-  const [selectedPayerId, setSelectedPayerId] = useState<number>(currentUser.id);
-  const [title, setTitle] = useState('');
-  const [amount, setAmount] = useState('');
-  const [description, setDescription] = useState('');
-  const [receiptImage, setReceiptImage] = useState<string | null>(null);
-
-  // Modal formularza przelewu
-  const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
+  // Stan formularza spłaty
   const [transferRecipientId, setTransferRecipientId] = useState<number | null>(null);
   const [transferAmount, setTransferAmount] = useState('');
   const [loading, setLoading] = useState(false);
@@ -129,11 +120,6 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
     Alert.alert('Skopiowano', `Kod "${group.join_code}" został skopiowany do schowka.`);
   };
 
-  const handleCopyBLIK = async (phone: string) => {
-    await Clipboard.setStringAsync(phone);
-    Alert.alert('Skopiowano', `Numer BLIK: ${phone} w schowku.`);
-  };
-
   const handleSelectSuggestedSettlement = (settlement: SettlementSuggestion) => {
     setTransferRecipientId(settlement.to_user_id);
     setTransferAmount((settlement.amount_cents / 100).toFixed(2));
@@ -143,30 +129,23 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
     setIsTransferModalOpen(true);
   };
 
-  const handleAddExpense = async () => {
-    if (!title.trim() || !amount.trim() || !selectedPayerId) {
-      Alert.alert('Błąd', 'Wypełnij wszystkie pola wydatku');
-      return;
-    }
-    const amountInCents = Math.round(parseFloat(amount.replace(',', '.')) * 100);
-    if (!Number.isFinite(amountInCents) || amountInCents <= 0) {
-      Alert.alert('Błąd', 'Wpisz poprawną kwotę');
-      return;
-    }
+  const handleAddExpenseSubmit = async (payload: {
+    title: string;
+    amountCents: number;
+    payerId: number;
+    description: string | null;
+    receiptImage: string | null;
+  }) => {
     setLoading(true);
     try {
       await addExpense(token, {
-        title: title.trim(),
-        amount: amountInCents,
-        payer_id: selectedPayerId,
+        title: payload.title,
+        amount: payload.amountCents,
+        payer_id: payload.payerId,
         group_id: group.id,
-        description: description.trim() || null,
-        receipt_image: receiptImage,
+        description: payload.description,
+        receipt_image: payload.receiptImage,
       });
-      setTitle('');
-      setAmount('');
-      setDescription('');
-      setReceiptImage(null);
       setIsExpenseModalOpen(false);
       Keyboard.dismiss();
       await loadDetails();
@@ -198,7 +177,7 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
     ]);
   };
 
-  const handleDeclareTransfer = async () => {
+  const handleDeclareTransferSubmit = async () => {
     if (!transferRecipientId || !transferAmount.trim()) {
       Alert.alert('Błąd', 'Wybierz odbiorcę i wpisz kwotę przelewu');
       return;
@@ -255,7 +234,6 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
     ]);
   };
 
-  const selectedRecipientUser = transferRecipientId ? getMemberById(transferRecipientId) : null;
   const mySettlements = balance?.suggested_settlements?.filter(
     (s) => s.from_user_id === currentUser.id
   ) || [];
@@ -434,237 +412,36 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
         />
       )}
 
-      {/* MODAL FORMULARZA PRZELEWU (BOTTOM SHEET - TAKI SAM JAK W WYDATKACH) */}
-      <Modal
-        visible={isTransferModalOpen}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setIsTransferModalOpen(false)}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={styles.modalBackdrop}
-        >
-          <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-            <View style={styles.modalContentWrapper}>
-              <View style={styles.formModalSheet}>
-                <View style={styles.modalHeaderBar}>
-                  <Text style={styles.modalSheetTitle}>Oddaj pieniądze</Text>
-                  <TouchableOpacity
-                    style={styles.sheetCloseBtn}
-                    onPress={() => {
-                      Keyboard.dismiss();
-                      setIsTransferModalOpen(false);
-                    }}
-                  >
-                    <Text style={styles.sheetCloseText}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-
-                <ScrollView
-                  keyboardShouldPersistTaps="handled"
-                  showsVerticalScrollIndicator={false}
-                >
-                  <Text style={styles.transferHint}>
-                    Twój łączny dług: {(Math.abs(netBalance) / 100).toFixed(2)} PLN
-                  </Text>
-
-                  <Text style={styles.subLabel}>Komu oddajesz?</Text>
-                  <View style={styles.transferRecipients}>
-                    {group.members
-                      .filter(
-                        (member) =>
-                          member.id !== currentUser.id &&
-                          (balance?.all_balances?.[String(member.id)] || 0) > 0
-                      )
-                      .map((member) => (
-                        <TouchableOpacity
-                          key={member.id}
-                          style={[
-                            styles.transferRecipient,
-                            transferRecipientId === member.id && styles.transferRecipientActive,
-                          ]}
-                          onPress={() => setTransferRecipientId(member.id)}
-                        >
-                          <Text style={styles.transferRecipientText}>{member.name}</Text>
-                        </TouchableOpacity>
-                      ))}
-                  </View>
-
-                  {selectedRecipientUser?.phone_number && (
-                    <TouchableOpacity
-                      style={styles.blikBadge}
-                      onPress={() => handleCopyBLIK(selectedRecipientUser.phone_number!)}
-                    >
-                      <Text style={styles.blikBadgeText}>
-                        BLIK do {selectedRecipientUser.name}: {selectedRecipientUser.phone_number} (kopiuj)
-                      </Text>
-                    </TouchableOpacity>
-                  )}
-
-                  <Text style={styles.subLabel}>Kwota przelewu (PLN)</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="np. 50.00"
-                    placeholderTextColor="#64748b"
-                    keyboardType="numeric"
-                    value={transferAmount}
-                    onChangeText={setTransferAmount}
-                  />
-
-                  <TouchableOpacity
-                    style={styles.actionBtn}
-                    onPress={handleDeclareTransfer}
-                    disabled={loading}
-                  >
-                    <Text style={styles.actionBtnText}>
-                      {loading ? 'Wysyłanie...' : 'Zadeklaruj przelew'}
-                    </Text>
-                  </TouchableOpacity>
-                </ScrollView>
-              </View>
-            </View>
-          </TouchableWithoutFeedback>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* MODAL FORMULARZA DODAWANIA WYDATKU */}
-      <Modal
+      {/* WYDZIELONE KOMPONENTY MODALI */}
+      <AddExpenseModal
         visible={isExpenseModalOpen}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setIsExpenseModalOpen(false)}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={styles.modalBackdrop}
-        >
-          <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-            <View style={styles.modalContentWrapper}>
-              <View style={styles.formModalSheet}>
-                <View style={styles.modalHeaderBar}>
-                  <Text style={styles.modalSheetTitle}>Nowy wydatek</Text>
-                  <TouchableOpacity
-                    style={styles.sheetCloseBtn}
-                    onPress={() => {
-                      Keyboard.dismiss();
-                      setIsExpenseModalOpen(false);
-                    }}
-                  >
-                    <Text style={styles.sheetCloseText}>✕</Text>
-                  </TouchableOpacity>
-                </View>
+        onClose={() => setIsExpenseModalOpen(false)}
+        onSubmit={handleAddExpenseSubmit}
+        group={group}
+        currentUser={currentUser}
+        loading={loading}
+      />
 
-                <ScrollView
-                  keyboardShouldPersistTaps="handled"
-                  showsVerticalScrollIndicator={false}
-                >
-                  <Text style={styles.subLabel}>Kto zapłacił?</Text>
-                  <View style={styles.payerSelector}>
-                    {group.members.map((member) => (
-                      <TouchableOpacity
-                        key={member.id}
-                        style={[
-                          styles.payerOption,
-                          selectedPayerId === member.id && styles.payerOptionActive,
-                        ]}
-                        onPress={() => setSelectedPayerId(member.id)}
-                      >
-                        <Text
-                          style={[
-                            styles.payerOptionText,
-                            selectedPayerId === member.id && styles.payerOptionTextActive,
-                          ]}
-                        >
-                          {member.id === currentUser.id ? 'Ja' : member.name}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
+      <DeclareTransferModal
+        visible={isTransferModalOpen}
+        onClose={() => setIsTransferModalOpen(false)}
+        onSubmit={handleDeclareTransferSubmit}
+        group={group}
+        currentUser={currentUser}
+        recipientId={transferRecipientId}
+        onSelectRecipient={setTransferRecipientId}
+        amount={transferAmount}
+        onChangeAmount={setTransferAmount}
+        totalDebtCents={netBalance}
+        allBalances={balance?.all_balances}
+        loading={loading}
+      />
 
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Tytuł wydatku (np. Zakupy Biedronka)"
-                    placeholderTextColor="#64748b"
-                    value={title}
-                    onChangeText={setTitle}
-                  />
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Kwota (PLN)"
-                    placeholderTextColor="#64748b"
-                    keyboardType="numeric"
-                    value={amount}
-                    onChangeText={setAmount}
-                  />
-                  <TextInput
-                    style={[styles.input, styles.descriptionInput]}
-                    placeholder="Opis (opcjonalnie)"
-                    placeholderTextColor="#64748b"
-                    value={description}
-                    onChangeText={setDescription}
-                    multiline
-                    numberOfLines={3}
-                    textAlignVertical="top"
-                  />
-                  <ReceiptPicker imageUri={receiptImage} onChange={setReceiptImage} />
-
-                  <TouchableOpacity
-                    style={styles.actionBtn}
-                    onPress={handleAddExpense}
-                    disabled={loading}
-                  >
-                    <Text style={styles.actionBtnText}>
-                      {loading ? 'Zapisywanie...' : 'Zapisz wydatek'}
-                    </Text>
-                  </TouchableOpacity>
-                </ScrollView>
-              </View>
-            </View>
-          </TouchableWithoutFeedback>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* MODAL SZCZEGÓŁÓW WYDATKU */}
-      <Modal
-        visible={selectedExpense !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setSelectedExpense(null)}
-      >
-        <View style={styles.modalOverlay}>
-          {selectedExpense && (
-            <View style={styles.detailsCard}>
-              <View style={styles.detailsHeader}>
-                <Text style={styles.detailsTitle}>Szczegóły wydatku</Text>
-                <TouchableOpacity style={styles.closeButton} onPress={() => setSelectedExpense(null)}>
-                  <Text style={styles.closeText}>✕</Text>
-                </TouchableOpacity>
-              </View>
-              <ScrollView>
-                <Text style={styles.detailsExpenseTitle}>{selectedExpense.title}</Text>
-                <Text style={styles.detailsAmount}>
-                  {(selectedExpense.amount / 100).toFixed(2)} PLN
-                </Text>
-                <Text style={styles.detailsLabel}>Płatnik</Text>
-                <Text style={styles.detailsValue}>{getPayerName(selectedExpense.payer_id)}</Text>
-                <Text style={styles.detailsLabel}>Data</Text>
-                <Text style={styles.detailsValue}>
-                  {new Date(selectedExpense.created_at).toLocaleString('pl-PL')}
-                </Text>
-                <Text style={styles.detailsLabel}>Opis</Text>
-                <Text style={styles.detailsValue}>{selectedExpense.description || 'Brak opisu'}</Text>
-                {selectedExpense.receipt_image && (
-                  <>
-                    <Text style={styles.detailsLabel}>Paragon</Text>
-                    <Image source={{ uri: selectedExpense.receipt_image }} style={styles.detailsImage} />
-                  </>
-                )}
-              </ScrollView>
-            </View>
-          )}
-        </View>
-      </Modal>
+      <ExpenseDetailsModal
+        expense={selectedExpense}
+        onClose={() => setSelectedExpense(null)}
+        getPayerName={getPayerName}
+      />
     </SafeAreaView>
   );
 }
@@ -735,64 +512,9 @@ const styles = StyleSheet.create({
   openTransferBtnText: { color: '#ffffff', fontSize: 15, fontWeight: '800' },
 
   sectionTitle: { color: '#f8fafc', fontSize: 16, fontWeight: '700', marginBottom: 8 },
-
-  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.7)', justifyContent: 'flex-end' },
-  modalContentWrapper: { flex: 1, justifyContent: 'flex-end' },
-  formModalSheet: {
-    backgroundColor: '#1e293b',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    maxHeight: '90%',
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  modalHeaderBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  modalSheetTitle: { color: '#f8fafc', fontSize: 18, fontWeight: '800' },
-  sheetCloseBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#334155',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sheetCloseText: { color: '#f8fafc', fontSize: 15, fontWeight: '700' },
-
-  subLabel: { color: '#94a3b8', fontSize: 12, marginBottom: 6, fontWeight: '600' },
-  payerSelector: { flexDirection: 'row', gap: 6, marginBottom: 12 },
-  payerOption: { flex: 1, backgroundColor: '#334155', paddingVertical: 8, borderRadius: 6, alignItems: 'center' },
-  payerOptionActive: { backgroundColor: '#2563eb' },
-  payerOptionText: { color: '#94a3b8', fontSize: 13, fontWeight: '600' },
-  payerOptionTextActive: { color: '#fff' },
-  input: {
-    backgroundColor: '#334155',
-    color: '#f8fafc',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 12,
-    fontSize: 15,
-  },
-  descriptionInput: { minHeight: 72 },
-  actionBtn: {
-    backgroundColor: '#2563eb',
-    paddingVertical: 14,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginTop: 6,
-    marginBottom: 20,
-  },
-  actionBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-
   emptyText: { color: '#64748b', textAlign: 'center', marginTop: 14, fontSize: 13 },
   tabScroll: { flex: 1 },
   tabContent: { paddingBottom: 60 },
-  transferHint: { color: '#94a3b8', fontSize: 13, marginBottom: 12 },
 
   suggestedContainer: { marginBottom: 12 },
   suggestedBadge: {
@@ -812,22 +534,5 @@ const styles = StyleSheet.create({
   suggestedPhoneMuted: { color: '#64748b', fontSize: 11, marginTop: 2 },
   suggestedAmount: { color: '#4ade80', fontWeight: '800', fontSize: 15 },
 
-  transferRecipients: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 },
-  transferRecipient: { backgroundColor: '#334155', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 6 },
-  transferRecipientActive: { backgroundColor: '#2563eb' },
-  transferRecipientText: { color: '#f8fafc', fontSize: 13, fontWeight: '700' },
-  blikBadge: { backgroundColor: '#0284c7', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, marginBottom: 12, alignItems: 'center' },
-  blikBadgeText: { color: '#ffffff', fontSize: 13, fontWeight: '700' },
   transferSectionTitle: { color: '#f8fafc', fontSize: 16, fontWeight: '800', marginTop: 12, marginBottom: 8 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.8)', justifyContent: 'center', padding: 20 },
-  detailsCard: { maxHeight: '85%', backgroundColor: '#1e293b', borderRadius: 12, padding: 18, borderWidth: 1, borderColor: '#475569' },
-  detailsHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 },
-  detailsTitle: { color: '#f8fafc', fontSize: 18, fontWeight: '800' },
-  closeButton: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#334155', alignItems: 'center', justifyContent: 'center' },
-  closeText: { color: '#f8fafc', fontSize: 16, fontWeight: '700' },
-  detailsExpenseTitle: { color: '#f8fafc', fontSize: 20, fontWeight: '800' },
-  detailsAmount: { color: '#fbbf24', fontSize: 18, fontWeight: '800', marginTop: 4, marginBottom: 16 },
-  detailsLabel: { color: '#94a3b8', fontSize: 11, fontWeight: '700', marginTop: 10, textTransform: 'uppercase' },
-  detailsValue: { color: '#f8fafc', fontSize: 14, marginTop: 3 },
-  detailsImage: { width: '100%', height: 220, resizeMode: 'cover', borderRadius: 8, marginTop: 6 },
 });

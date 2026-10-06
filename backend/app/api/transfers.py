@@ -1,9 +1,9 @@
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_current_user
+from app.api.auth import get_current_user, send_expo_push
 from app.api.balance import calculate_group_balances
 from app.core.database import get_db
 from app.models.base import Group, Transfer, User
@@ -16,6 +16,7 @@ router = APIRouter()
 def declare_transfer(
     group_id: int,
     payload: TransferCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -52,6 +53,18 @@ def declare_transfer(
     db.add(transfer)
     db.commit()
     db.refresh(transfer)
+
+    # Wysłanie powiadomienia push do odbiorcy przelewu
+    if receiver.expo_push_token:
+        amount_pln = f"{payload.amount / 100:.2f} PLN"
+        background_tasks.add_task(
+            send_expo_push,
+            token=receiver.expo_push_token,
+            title="Nowa deklaracja przelewu",
+            body=f"{current_user.name} zadeklarował spłatę {amount_pln}. Sprawdź konto i potwierdź.",
+            data={"group_id": group_id, "transfer_id": transfer.id, "type": "transfer_declared"},
+        )
+
     return transfer
 
 
@@ -78,6 +91,7 @@ def update_transfer_status(
     new_status: str,
     current_user: User,
     db: Session,
+    background_tasks: BackgroundTasks | None = None,
 ):
     transfer = db.query(Transfer).filter(Transfer.id == transfer_id).first()
     if not transfer:
@@ -90,16 +104,31 @@ def update_transfer_status(
     transfer.status = new_status
     db.commit()
     db.refresh(transfer)
+
+    # Opcjonalne powiadomienie do nadawcy, gdy przelew zostanie zatwierdzony
+    if new_status == "confirmed" and background_tasks:
+        sender = db.query(User).filter(User.id == transfer.sender_id).first()
+        if sender and sender.expo_push_token:
+            amount_pln = f"{transfer.amount / 100:.2f} PLN"
+            background_tasks.add_task(
+                send_expo_push,
+                token=sender.expo_push_token,
+                title="Przelew potwierdzony",
+                body=f"{current_user.name} potwierdził odbiór {amount_pln}.",
+                data={"transfer_id": transfer.id, "type": "transfer_confirmed"},
+            )
+
     return transfer
 
 
 @router.post("/transfers/{transfer_id}/confirm", response_model=TransferOut)
 def confirm_transfer(
     transfer_id: int,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return update_transfer_status(transfer_id, "confirmed", current_user, db)
+    return update_transfer_status(transfer_id, "confirmed", current_user, db, background_tasks)
 
 
 @router.post("/transfers/{transfer_id}/reject", response_model=TransferOut)

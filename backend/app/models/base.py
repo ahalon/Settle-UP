@@ -30,6 +30,7 @@ class User(Base):
     phone_number = Column(String(20), nullable=True)  # Numer telefonu np. do BLIKa
     hashed_password = Column(String(255), nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    expo_push_token = Column(String, nullable=True)
 
     # Relacje
     groups = relationship("Group", secondary=group_members, back_populates="members")
