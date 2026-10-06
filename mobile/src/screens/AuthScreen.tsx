@@ -50,25 +50,42 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
 
     setLoading(true);
     try {
-      const response = isLoginMode
-        ? await login({ email: trimmedEmail, password })
-        : await register({
-            name: trimmedName,
-            email: trimmedEmail,
-            password,
-            phone_number: cleanPhone || null,
-          });
+      if (isLoginMode) {
+        // FLOW LOGOWANIA
+        const response = await login({ email: trimmedEmail, password });
+        const { access_token, user_id, name: userName, phone_number } = response.data;
+        const user: CurrentUser = {
+          id: user_id,
+          name: userName,
+          phone_number: phone_number ?? (cleanPhone || null),
+        };
 
-      const { access_token, user_id, name: userName, phone_number } = response.data;
-      const user: CurrentUser = {
-        id: user_id,
-        name: userName,
-        phone_number: phone_number ?? (cleanPhone || null),
-      };
+        await saveToken(access_token);
+        await saveUserData(user);
+        onLoginSuccess(user);
+      } else {
+        // FLOW REJESTRACJI (wymaga potwierdzenia maila)
+        await register({
+          name: trimmedName,
+          email: trimmedEmail,
+          password,
+          phone_number: cleanPhone || null,
+        });
 
-      await saveToken(access_token);
-      await saveUserData(user);
-      onLoginSuccess(user);
+        Alert.alert(
+          'Konto utworzone!',
+          'Wysłaliśmy link weryfikacyjny na Twój adres e-mail. Sprawdź skrzynkę (oraz folder SPAM), kliknij link, a następnie zaloguj się.',
+          [
+            {
+              text: 'OK',
+              onPress: () => {
+                setPassword('');
+                setIsLoginMode(true);
+              },
+            },
+          ]
+        );
+      }
     } catch (err: any) {
       Alert.alert('Błąd', getErrorMessage(err, 'Wystąpił błąd autoryzacji'));
     } finally {
