@@ -8,6 +8,7 @@ from app.api.balance import calculate_group_balances
 from app.core.database import get_db
 from app.models.base import Group, Transfer, User
 from app.schemas import TransferCreate, TransferOut
+from app.services.email_service import send_transfer_notification_email
 
 router = APIRouter()
 
@@ -54,7 +55,7 @@ def declare_transfer(
     db.commit()
     db.refresh(transfer)
 
-    # Wysłanie powiadomienia push do odbiorcy przelewu
+    # 1. Powiadomienie push do odbiorcy przelewu
     if receiver.expo_push_token:
         amount_pln = f"{payload.amount / 100:.2f} PLN"
         background_tasks.add_task(
@@ -64,6 +65,14 @@ def declare_transfer(
             body=f"{current_user.name} zadeklarował spłatę {amount_pln}. Sprawdź konto i potwierdź.",
             data={"group_id": group_id, "transfer_id": transfer.id, "type": "transfer_declared"},
         )
+
+    # 2. Powiadomienie e-mail do odbiorcy przelewu
+    background_tasks.add_task(
+        send_transfer_notification_email,
+        recipient_email=receiver.email,
+        sender_name=current_user.name,
+        amount_cents=payload.amount,
+    )
 
     return transfer
 
@@ -105,7 +114,7 @@ def update_transfer_status(
     db.commit()
     db.refresh(transfer)
 
-    # Opcjonalne powiadomienie do nadawcy, gdy przelew zostanie zatwierdzony
+    # Powiadomienie push do nadawcy po potwierdzeniu przelewu
     if new_status == "confirmed" and background_tasks:
         sender = db.query(User).filter(User.id == transfer.sender_id).first()
         if sender and sender.expo_push_token:

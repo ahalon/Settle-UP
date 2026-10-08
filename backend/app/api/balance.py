@@ -1,27 +1,24 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, status
 from sqlalchemy import extract
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_current_user
+from app.api.auth import get_current_user, send_expo_push
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.base import Expense, Group, Transfer, User
 from app.schemas import BalanceOut, MonthlySummaryOut
+from app.services.email_service import send_monthly_settlement_email
 
 router = APIRouter()
 
 
 def simplify_debts(net_balances: dict[int, int], members: list[User]) -> list[dict]:
-    """
-    Zachłanny algorytm minimalizacji liczby transakcji (Splitwise style).
-    Paruje największych dłużników z największymi wierzycielami.
-    """
     member_map = {m.id: m for m in members}
 
-    # dłużnicy (-) i wierzyciele (+)
-    debtors = []    # [user_id, kwota_do_oddania_dodatnia]
-    creditors = []  # [user_id, kwota_do_odebrania]
+    debtors = []
+    creditors = []
 
     for user_id, bal in net_balances.items():
         if bal < 0:
@@ -29,7 +26,6 @@ def simplify_debts(net_balances: dict[int, int], members: list[User]) -> list[di
         elif bal > 0:
             creditors.append([user_id, bal])
 
-    # Sortujemy malejąco po kwocie, żeby zminimalizować liczbę transferów
     debtors.sort(key=lambda x: x[1], reverse=True)
     creditors.sort(key=lambda x: x[1], reverse=True)
 
@@ -165,7 +161,6 @@ def get_group_monthly_summary(
     )
 
     total_group_spent = sum(e.amount for e in monthly_expenses)
-
     spending_by_user = {member.id: {"name": member.name, "amount": 0} for member in group.members}
 
     for exp in monthly_expenses:
@@ -183,4 +178,71 @@ def get_group_monthly_summary(
         "my_spent_pln": f"{my_spent / 100:.2f} PLN",
         "expense_count": len(monthly_expenses),
         "members_breakdown": list(spending_by_user.values()),
+    }
+
+
+@router.post("/settlements/monthly-trigger")
+def trigger_monthly_settlement(
+    background_tasks: BackgroundTasks,
+    x_cron_key: str | None = Header(None, alias="X-Cron-Key"),
+    db: Session = Depends(get_db),
+):
+    """
+    Endpoint wywoływany 1. dnia miesiąca przez crona.
+    Wymaga nagłówka X-Cron-Key zgodnego z CRON_SECRET w ustawieniach.
+    """
+    expected_secret = getattr(settings, "CRON_SECRET", "settleup-secret-cron-key")
+    if x_cron_key != expected_secret:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Nieautoryzowane wywołanie crona.",
+        )
+
+    groups = db.query(Group).all()
+    notified_users_count = 0
+
+    for group in groups:
+        if len(group.members) < 2:
+            continue
+
+        net_balances = calculate_group_balances(group, db)
+        settlements = simplify_debts(net_balances, group.members)
+
+        # Grupujemy długi według dłużnika: debtor_id -> list of settlements
+        debts_by_user: dict[int, list[dict]] = {}
+        for s in settlements:
+            debts_by_user.setdefault(s["from_user_id"], []).append(s)
+
+        member_map = {m.id: m for m in group.members}
+
+        for user_id, user_settlements in debts_by_user.items():
+            user = member_map.get(user_id)
+            if not user:
+                continue
+
+            notified_users_count += 1
+
+            # 1. Push
+            if user.expo_push_token:
+                background_tasks.add_task(
+                    send_expo_push,
+                    token=user.expo_push_token,
+                    title=f"Miesięczne rozliczenie: {group.name}",
+                    body="Sprawdź swoje saldo i spłać zobowiązania w grupie.",
+                    data={"group_id": group.id, "type": "monthly_settlement"},
+                )
+
+            # 2. Email
+            background_tasks.add_task(
+                send_monthly_settlement_email,
+                recipient_email=user.email,
+                recipient_name=user.name,
+                group_name=group.name,
+                settlements=user_settlements,
+            )
+
+    return {
+        "status": "success",
+        "processed_groups": len(groups),
+        "notified_debtors": notified_users_count,
     }
