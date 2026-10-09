@@ -249,11 +249,10 @@ $$\sum \text{net\_balances} = 0$$
    Interactive Swagger documentation will be available at:  
    👉 **http://localhost:8000/docs**
 
-*(Alternatively, run using Docker):*
+*(Alternatively, run using Docker Compose from the project root):*
 ```bash
-cd backend
-docker build -t settleup-backend .
-docker run -p 8000:8000 --env-file .env settleup-backend
+# From the project root directory (not backend/):
+docker compose up -d --build
 ```
 
 ---

@@ -1,0 +1,14 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: settleup-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/splitwise.db:/app/splitwise.db
+    env_file:
+      - ./backend/.env
+    restart: unless-stopped
+

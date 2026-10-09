@@ -1,15 +1,31 @@
+# Virtual environments
 .venv/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
 env/
 venv/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+
+# Testing & linting caches
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Local database & environment secrets
 .env
+.env.*
 splitwise.db
 *.db
-.git
-.gitignore
-tests/
+*.sqlite3
 
+# Git metadata
+.git/
+.gitignore
+
+# OS generated files
+.DS_Store
+Thumbs.db
