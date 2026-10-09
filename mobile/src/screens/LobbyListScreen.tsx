@@ -1,5 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, Keyboard, ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+  Alert,
+  Keyboard,
+  RefreshControl,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { removeToken } from '../../authStorage';
@@ -20,6 +31,7 @@ export default function LobbyListScreen({ token, currentUser, onSelectGroup, onL
   const [newGroupName, setNewGroupName] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const loadGroups = async () => {
     try {
@@ -35,6 +47,15 @@ export default function LobbyListScreen({ token, currentUser, onSelectGroup, onL
       setGroups(groupsWithBalances);
     } catch (err: any) {
       Alert.alert('Błąd', getErrorMessage(err, 'Nie udało się pobrać grup'));
+    }
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await loadGroups();
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -81,7 +102,22 @@ export default function LobbyListScreen({ token, currentUser, onSelectGroup, onL
           <Text style={styles.logoutText}>Wyloguj</Text>
         </TouchableOpacity>
       </View>
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled" alwaysBounceVertical bounces overScrollMode="always">
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
+        alwaysBounceVertical
+        bounces
+        overScrollMode="always"
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#38bdf8"
+            colors={['#38bdf8']}
+          />
+        }
+      >
         <View style={styles.dashboardActions}>
           <TouchableOpacity style={[styles.dashboardAction, styles.createAction]} onPress={() => setAction(action === 'create' ? null : 'create')}>
             <Text style={styles.actionIcon}>＋</Text><Text style={styles.actionTitle}>Utwórz lobby</Text><Text style={styles.actionHint}>Stwórz nowe miejsce dla grupy</Text>

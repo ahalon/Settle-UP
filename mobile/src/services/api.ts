@@ -15,11 +15,30 @@ import {
   Transfer,
 } from '../types';
 
-export const API_URL = 'http://192.168.0.199:8000';
+export const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.0.199:8000';
 
 const authHeaders = (token: string) => ({
   Authorization: `Bearer ${token}`,
 });
+
+type UnauthorizedHandler = () => void;
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+
+export const setOnUnauthorizedHandler = (handler: UnauthorizedHandler | null) => {
+  unauthorizedHandler = handler;
+};
+
+axios.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    if (error?.response?.status === 401 && !error?.config?.url?.includes('/api/auth/login')) {
+      if (unauthorizedHandler) {
+        unauthorizedHandler();
+      }
+    }
+    return Promise.reject(error);
+  }
+);
 
 export const register = (payload: RegisterPayload) =>
   axios.post<TokenResponse>(`${API_URL}/api/auth/register`, payload);
@@ -82,7 +101,7 @@ export const deleteTransfer = (token: string, transferId: number) =>
 
 export const updatePushToken = (token: string, pushToken: string) => {
   return axios.post(
-    '/auth/push-token',
+    `${API_URL}/api/auth/push-token`,
     { token: pushToken },
     { headers: { Authorization: `Bearer ${token}` } }
   );

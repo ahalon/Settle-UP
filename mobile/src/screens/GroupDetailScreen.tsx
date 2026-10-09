@@ -3,6 +3,7 @@ import {
   Alert,
   FlatList,
   Keyboard,
+  RefreshControl,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -73,6 +74,7 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
   const [transferRecipientId, setTransferRecipientId] = useState<number | null>(null);
   const [transferAmount, setTransferAmount] = useState('');
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const getMemberById = (id: number) => group.members.find((member) => member.id === id);
 
@@ -108,6 +110,15 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
       }
     } catch (err: any) {
       Alert.alert('Błąd', getErrorMessage(err, 'Nie udało się pobrać danych grupy'));
+    }
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await loadDetails();
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -305,6 +316,14 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
           style={styles.tabScroll}
           contentContainerStyle={styles.tabContent}
           showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor="#38bdf8"
+              colors={['#38bdf8']}
+            />
+          }
         >
           {balance?.my_net_balance !== undefined && balance.my_net_balance < 0 && (
             <View style={styles.settlementSection}>
@@ -378,14 +397,42 @@ export default function GroupDetailScreen({ token, currentUser, group, onBack }:
               );
             })}
 
+          {transfers.some((transfer) => transfer.status === 'rejected') && (
+            <>
+              <Text style={styles.transferSectionTitle}>Odrzucone</Text>
+              {transfers
+                .filter((transfer) => transfer.status === 'rejected')
+                .map((transfer) => {
+                  const receiver = getMemberById(transfer.receiver_id);
+                  return (
+                    <TransferItem
+                      key={transfer.id}
+                      transfer={transfer}
+                      senderName={getPayerName(transfer.sender_id)}
+                      receiverName={getPayerName(transfer.receiver_id)}
+                      receiverPhone={receiver?.phone_number}
+                      currentUserId={currentUser.id}
+                      onDecision={(decision) => handleDecision(transfer.id, decision)}
+                      onDelete={() => handleDeleteTransfer(transfer.id)}
+                    />
+                  );
+                })}
+            </>
+          )}
+
           {!transfers.some(
-            (transfer) => transfer.status === 'pending' || transfer.status === 'confirmed'
+            (transfer) =>
+              transfer.status === 'pending' ||
+              transfer.status === 'confirmed' ||
+              transfer.status === 'rejected'
           ) && <Text style={styles.emptyText}>Brak przelewów</Text>}
         </ScrollView>
       ) : (
         <FlatList
           data={expenses}
           keyExtractor={(item) => item.id.toString()}
+          refreshing={refreshing}
+          onRefresh={handleRefresh}
           renderItem={({ item }) => (
             <ExpenseItem
               expense={item}

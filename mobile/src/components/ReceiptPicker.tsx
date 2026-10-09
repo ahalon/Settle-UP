@@ -18,11 +18,16 @@ export default function ReceiptPicker({ imageUri, onChange }: ReceiptPickerProps
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsEditing: false,
-      quality: 0.8,
+      quality: 0.5,
+      base64: true,
     });
 
     if (!result.canceled && result.assets?.length) {
-      onChange(result.assets[0].uri);
+      const asset = result.assets[0];
+      const imageString = asset.base64
+        ? `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}`
+        : asset.uri;
+      onChange(imageString);
     }
   };
 

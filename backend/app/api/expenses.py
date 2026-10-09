@@ -25,6 +25,12 @@ def add_expense(
     if current_user not in group.members:
         raise HTTPException(status_code=403, detail="Nie masz dostępu do tej grupy.")
 
+    if not any(member.id == payload.payer_id for member in group.members):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Wskazany płatnik nie należy do tej grupy.",
+        )
+
     expense = Expense(
         title=payload.title,
         amount=payload.amount,

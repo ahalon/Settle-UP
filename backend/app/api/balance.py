@@ -74,15 +74,20 @@ def calculate_group_balances(
     if num_members == 0:
         return net_balances
 
+    sorted_members = sorted(members, key=lambda m: m.id)
+
     expense_query = db.query(Expense).filter(Expense.group_id == group.id)
     if as_of is not None:
         expense_query = expense_query.filter(Expense.created_at <= as_of)
     expenses = expense_query.all()
     for expense in expenses:
-        share = expense.amount // num_members
-        for member in members:
-            net_balances[member.id] -= share
-        net_balances[expense.payer_id] += expense.amount
+        base_share = expense.amount // num_members
+        remainder = expense.amount % num_members
+        for i, member in enumerate(sorted_members):
+            extra = 1 if i < remainder else 0
+            net_balances[member.id] -= (base_share + extra)
+        if expense.payer_id in net_balances:
+            net_balances[expense.payer_id] += expense.amount
 
     transfer_query = db.query(Transfer).filter(
         Transfer.group_id == group.id,
@@ -92,8 +97,10 @@ def calculate_group_balances(
         transfer_query = transfer_query.filter(Transfer.created_at <= as_of)
     active_transfers = transfer_query.all()
     for transfer in active_transfers:
-        net_balances[transfer.sender_id] += transfer.amount
-        net_balances[transfer.receiver_id] -= transfer.amount
+        if transfer.sender_id in net_balances:
+            net_balances[transfer.sender_id] += transfer.amount
+        if transfer.receiver_id in net_balances:
+            net_balances[transfer.receiver_id] -= transfer.amount
 
     return net_balances
 

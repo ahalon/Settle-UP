@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.auth import get_current_user, send_expo_push
 from app.api.balance import calculate_group_balances
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.models.base import Group, Notification, User
 from app.schemas import NotificationOut
 
@@ -120,16 +120,23 @@ def get_notifications(
     )
 
 
+def _run_monthly_notifications_task(year: int | None = None, month: int | None = None) -> None:
+    db = SessionLocal()
+    try:
+        generate_monthly_notifications(db, year, month)
+    finally:
+        db.close()
+
+
 @router.post("/notifications/trigger-monthly-summary")
 def trigger_monthly_summary(
     background_tasks: BackgroundTasks,
     year: int | None = Query(None, description="Rok podsumowania (np. 2026)"),
     month: int | None = Query(None, description="Miesiąc podsumowania (1-12)"),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     """Ręczne wywołanie generowania podsumowań (testy lub ręczny cron)."""
-    background_tasks.add_task(generate_monthly_notifications, db, year, month)
+    background_tasks.add_task(_run_monthly_notifications_task, year, month)
     return {
         "status": "ok",
         "message": f"Uruchomiono generowanie powiadomień za {month or 'poprzedni'}/{year or 'rok'} w tle.",

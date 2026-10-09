@@ -33,10 +33,22 @@ export default function TransferItem({
     Alert.alert('Skopiowano', `Numer ${receiverPhone} został skopiowany do schowka.`);
   };
 
+  const itemStyle = pending
+    ? styles.pending
+    : transfer.status === 'confirmed'
+    ? styles.confirmed
+    : styles.rejected;
+
+  const statusStyle = pending
+    ? styles.pendingStatus
+    : transfer.status === 'confirmed'
+    ? styles.confirmedStatus
+    : styles.rejectedStatus;
+
   return (
-    <View style={pending ? styles.pending : styles.confirmed}>
+    <View style={itemStyle}>
       <View style={styles.header}>
-        <Text style={pending ? styles.pendingStatus : styles.confirmedStatus}>
+        <Text style={statusStyle}>
           {transfer.status === 'pending' ? 'OCZEKUJĄCY' : transfer.status === 'confirmed' ? 'POTWIERDZONY' : 'ODRZUCONY'}
         </Text>
         {isSender && pending && (
@@ -84,9 +96,11 @@ export default function TransferItem({
 const styles = StyleSheet.create({
   pending: { backgroundColor: '#1e293b', borderColor: '#f59e0b', borderWidth: 1, borderRadius: 8, padding: 12, marginBottom: 8 },
   confirmed: { backgroundColor: '#14532d', borderColor: '#22c55e', borderWidth: 1, borderRadius: 8, padding: 12, marginBottom: 8 },
+  rejected: { backgroundColor: '#450a0a', borderColor: '#ef4444', borderWidth: 1, borderRadius: 8, padding: 12, marginBottom: 8 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   pendingStatus: { color: '#fbbf24', fontSize: 10, fontWeight: '800' },
   confirmedStatus: { color: '#86efac', fontSize: 10, fontWeight: '800' },
+  rejectedStatus: { color: '#f87171', fontSize: 10, fontWeight: '800' },
   deleteButton: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#7f1d1d', alignItems: 'center', justifyContent: 'center' },
   deleteText: { color: '#fecaca', fontSize: 14, fontWeight: '800' },
   people: { color: '#f8fafc', fontSize: 15, fontWeight: '700', marginTop: 6 },

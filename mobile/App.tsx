@@ -5,7 +5,7 @@ import { getToken, getUserData, removeToken } from './authStorage';
 import AuthScreen from './src/screens/AuthScreen';
 import GroupDetailScreen from './src/screens/GroupDetailScreen';
 import LobbyListScreen from './src/screens/LobbyListScreen';
-import { updatePushToken } from './src/services/api';
+import { setOnUnauthorizedHandler, updatePushToken } from './src/services/api';
 import { CurrentUser, Group } from './src/types';
 import { registerForPushNotificationsAsync } from './src/utils/notifications';
 
@@ -60,6 +60,11 @@ export default function App() {
     setCurrentUser(null);
     setActiveGroup(null);
   };
+
+  useEffect(() => {
+    setOnUnauthorizedHandler(handleLogout);
+    return () => setOnUnauthorizedHandler(null);
+  }, []);
 
   if (isInitializing) {
     return (
