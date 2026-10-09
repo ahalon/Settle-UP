@@ -1,6 +1,7 @@
 <div align="center">
 
 # 💳 SettleApp
+[![Backend CI](https://github.com/ahalon/Settle-UP/actions/workflows/ci.yml/badge.svg)](https://github.com/ahalon/Settle-UP/actions/workflows/ci.yml)
 
 **Full-stack, mobile-first group expense sharing and debt simplification platform**  
 *Split bills fairly, settle debts with minimal transactions, and track shared balances in real time.*
