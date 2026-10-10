@@ -15,7 +15,8 @@ import {
   Transfer,
 } from '../types';
 
-export const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.0.199:8000';
+export const API_URL =
+  process.env.EXPO_PUBLIC_API_URL || 'https://settle-app-lnyt.onrender.com';
 
 const authHeaders = (token: string) => ({
   Authorization: `Bearer ${token}`,
