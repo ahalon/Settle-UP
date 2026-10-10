@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "SettleUp",
-    "slug": "settleup",
+    "name": "SettleApp",
+    "slug": "settle-app",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/settle_app_logo.png",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
@@ -25,6 +25,11 @@
     },
     "plugins": [
       "expo-secure-store"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "3d084c4b-b5de-4a93-8d27-3d69bead1657"
+      }
+    }
   }
 }
