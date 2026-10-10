@@ -29,6 +29,9 @@ def mock_external_services():
          patch("app.api.transfers.send_expo_push"), \
          patch("app.api.balance.send_expo_push"), \
          patch("app.services.email_service._send_email_smtp", return_value=True), \
+         patch("app.services.email_service._send_email_brevo", return_value=True), \
+         patch("app.services.email_service._send_email_resend", return_value=True), \
+         patch("app.services.email_service._send_email", return_value=True), \
          patch("app.services.email_service.send_verification_email"), \
          patch("app.services.email_service.send_transfer_notification_email"), \
          patch("app.services.email_service.send_transfer_rejected_email"), \

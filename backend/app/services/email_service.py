@@ -1,8 +1,44 @@
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import smtplib
+import requests
 
 from app.core.config import settings
+
+
+def _send_email_resend(to_email: str, subject: str, html_content: str) -> bool:
+    """Wysyła e-mail za pomocą Resend REST API (HTTPS). Działa niezawodnie w chmurach typu Render."""
+    if not settings.RESEND_API_KEY:
+        return False
+
+    sender = settings.EMAIL_FROM or "SettleApp <onboarding@resend.dev>"
+    if "@" not in sender:
+        sender = "SettleApp <onboarding@resend.dev>"
+
+    url = "https://api.resend.com/emails"
+    headers = {
+        "Authorization": f"Bearer {settings.RESEND_API_KEY.strip()}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "from": sender,
+        "to": [to_email],
+        "subject": subject,
+        "html": html_content,
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        if response.status_code in (200, 201):
+            data = response.json()
+            print(f"[RESEND SUCCESS] Mail wysłany do {to_email} ({subject}), id: {data.get('id')}")
+            return True
+        else:
+            print(f"[RESEND ERROR] Błąd Resend API ({response.status_code}): {response.text}")
+            return False
+    except Exception as e:
+        print(f"[RESEND ERROR] Błąd połączenia z Resend API: {e}")
+        return False
 
 
 def _send_email_smtp(to_email: str, subject: str, html_content: str) -> bool:
@@ -41,6 +77,72 @@ def _send_email_smtp(to_email: str, subject: str, html_content: str) -> bool:
         return False
 
 
+def _send_email_brevo(to_email: str, subject: str, html_content: str) -> bool:
+    """Wysyła e-mail za pomocą Brevo REST API (HTTPS). Działa na Renderze i pozwala wysyłać do każdego odbiorcy za darmo (300 maili/dzień)."""
+    if not getattr(settings, "BREVO_API_KEY", ""):
+        return False
+
+    sender_email = settings.EMAIL_FROM or settings.SMTP_USER or "settle.app26@gmail.com"
+    sender_name = "SettleApp"
+
+    url = "https://api.brevo.com/v3/smtp/email"
+    headers = {
+        "api-key": settings.BREVO_API_KEY.strip(),
+        "accept": "application/json",
+        "content-type": "application/json",
+    }
+    payload = {
+        "sender": {
+            "name": sender_name,
+            "email": sender_email,
+        },
+        "to": [
+            {
+                "email": to_email,
+            }
+        ],
+        "subject": subject,
+        "htmlContent": html_content,
+    }
+
+    try:
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        if response.status_code in (200, 201):
+            data = response.json()
+            print(f"[BREVO SUCCESS] Mail wysłany do {to_email} ({subject}), id: {data.get('messageId')}")
+            return True
+        else:
+            print(f"[BREVO ERROR] Błąd Brevo API ({response.status_code}): {response.text}")
+            return False
+    except Exception as e:
+        print(f"[BREVO ERROR] Wyjątek podczas wysyłki przez Brevo API: {e}")
+        return False
+
+
+def _send_email(to_email: str, subject: str, html_content: str) -> bool:
+    """
+    Główna funkcja wysyłki e-maili:
+    1. Próbuje najpierw przez Brevo REST API (HTTPS port 443 - 300 darmowych maili dziennie do każdego).
+    2. Jeśli nie ma klucza Brevo, próbuje przez Resend REST API.
+    3. Jako fallback używa standardowego SMTP (np. lokalnie z Gmailem).
+    """
+    if getattr(settings, "BREVO_API_KEY", ""):
+        if _send_email_brevo(to_email, subject, html_content):
+            return True
+        print("[EMAIL INFO] Próba wysyłki przez Brevo nie powiodła się, sprawdzam inne metody...")
+
+    if getattr(settings, "RESEND_API_KEY", ""):
+        if _send_email_resend(to_email, subject, html_content):
+            return True
+        print("[EMAIL INFO] Próba wysyłki przez Resend nie powiodła się, sprawdzam SMTP...")
+
+    if settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD:
+        return _send_email_smtp(to_email, subject, html_content)
+
+    print("[EMAIL WARNING] Brak skonfigurowanego klucza Brevo/Resend ani pełnych danych SMTP!")
+    return False
+
+
 def send_verification_email(to_email: str, token: str) -> None:
     base_url = getattr(settings, "BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
     verify_url = f"{base_url}/api/auth/verify?token={token}"
@@ -62,7 +164,7 @@ def send_verification_email(to_email: str, token: str) -> None:
     </html>
     """
 
-    _send_email_smtp(to_email, "Zweryfikuj konto w SettleApp", html_content)
+    _send_email(to_email, "Zweryfikuj konto w SettleApp", html_content)
 
 
 def send_transfer_notification_email(recipient_email: str, sender_name: str, amount_cents: int) -> None:
@@ -80,7 +182,7 @@ def send_transfer_notification_email(recipient_email: str, sender_name: str, amo
     </html>
     """
 
-    _send_email_smtp(recipient_email, f"SettleApp: {sender_name} zadeklarował spłatę {amount_pln}", html_content)
+    _send_email(recipient_email, f"SettleApp: {sender_name} zadeklarował spłatę {amount_pln}", html_content)
 
 
 def send_transfer_rejected_email(
@@ -107,7 +209,7 @@ def send_transfer_rejected_email(
     </html>
     """
 
-    _send_email_smtp(recipient_email, f"SettleApp: {receiver_name} odrzucił deklarację spłaty {amount_pln}", html_content)
+    _send_email(recipient_email, f"SettleApp: {receiver_name} odrzucił deklarację spłaty {amount_pln}", html_content)
 
 
 def send_monthly_settlement_email(
@@ -116,7 +218,6 @@ def send_monthly_settlement_email(
     group_name: str,
     settlements: list[dict],
 ) -> None:
-    # Generujemy wiersze z instrukcjami kogo spłacić
     rows_html = "".join(
         f"""
         <li style="margin-bottom: 8px;">
@@ -145,4 +246,4 @@ def send_monthly_settlement_email(
     </html>
     """
 
-    _send_email_smtp(recipient_email, f"SettleApp: Miesięczne rozliczenie grupy {group_name}", html_content)
+    _send_email(recipient_email, f"SettleApp: Miesięczne rozliczenie grupy {group_name}", html_content)
